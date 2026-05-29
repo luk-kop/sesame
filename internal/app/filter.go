@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -14,11 +15,48 @@ type ListFilters struct {
 	AllStates bool
 }
 
+var validEC2States = map[string]struct{}{
+	"pending":       {},
+	"running":       {},
+	"shutting-down": {},
+	"terminated":    {},
+	"stopping":      {},
+	"stopped":       {},
+}
+
+var validSSMStatuses = map[string]struct{}{
+	string(domain.SSMStatusUnknown):        {},
+	string(domain.SSMStatusNotManaged):     {},
+	string(domain.SSMStatusOnline):         {},
+	string(domain.SSMStatusConnectionLost): {},
+	string(domain.SSMStatusError):          {},
+}
+
+func NormalizeListFilters(filters ListFilters) (ListFilters, error) {
+	filters.Name = strings.TrimSpace(filters.Name)
+	filters.State = strings.ToLower(strings.TrimSpace(filters.State))
+	filters.SSMStatus = strings.ToLower(strings.TrimSpace(filters.SSMStatus))
+
+	if filters.State != "" {
+		if _, ok := validEC2States[filters.State]; !ok {
+			return ListFilters{}, fmt.Errorf("unsupported EC2 state %q", filters.State)
+		}
+	}
+	if filters.SSMStatus != "" {
+		if _, ok := validSSMStatuses[filters.SSMStatus]; !ok {
+			return ListFilters{}, fmt.Errorf("unsupported SSM status %q", filters.SSMStatus)
+		}
+	}
+
+	return filters, nil
+}
+
 func ApplyListFilters(instances []domain.Instance, filters ListFilters) []domain.Instance {
+	filters, _ = NormalizeListFilters(filters)
 	out := make([]domain.Instance, 0, len(instances))
 	name := strings.ToLower(filters.Name)
-	state := strings.ToLower(filters.State)
-	ssmStatus := strings.ToLower(filters.SSMStatus)
+	state := filters.State
+	ssmStatus := filters.SSMStatus
 
 	for _, inst := range instances {
 		if !filters.AllStates && state == "" && strings.EqualFold(inst.State, "terminated") {

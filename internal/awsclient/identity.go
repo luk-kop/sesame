@@ -9,8 +9,12 @@ import (
 	"sesame/internal/domain"
 )
 
+type STSAPI interface {
+	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
 type IdentityProvider struct {
-	Client *sts.Client
+	Client STSAPI
 }
 
 func (p IdentityProvider) GetCallerIdentity(ctx context.Context) (domain.Identity, error) {

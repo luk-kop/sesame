@@ -16,8 +16,16 @@ import (
 
 type InventoryProvider struct {
 	Region string
-	EC2    *ec2.Client
-	SSM    *ssm.Client
+	EC2    EC2API
+	SSM    SSMAPI
+}
+
+type EC2API interface {
+	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+}
+
+type SSMAPI interface {
+	DescribeInstanceInformation(context.Context, *ssm.DescribeInstanceInformationInput, ...func(*ssm.Options)) (*ssm.DescribeInstanceInformationOutput, error)
 }
 
 func (p InventoryProvider) ListInstances(ctx context.Context) ([]domain.Instance, []domain.Warning, error) {
@@ -50,12 +58,13 @@ func (p InventoryProvider) GetInstance(ctx context.Context, instanceID string) (
 		return domain.Instance{}, fmt.Errorf("describe EC2 instance: %w", err)
 	}
 	if len(instances) == 0 {
-		return domain.Instance{}, fmt.Errorf("instance not found")
+		return domain.Instance{}, fmt.Errorf("%w: %s", domain.ErrInstanceNotFound, instanceID)
 	}
 
 	ssmInfo, err := p.describeSSM(ctx)
 	if err != nil {
-		return domain.Instance{}, fmt.Errorf("describe SSM instance information: %w", err)
+		instances[0].SSMStatus = domain.SSMStatusError
+		return instances[0], nil
 	}
 	mergeSSM(instances, ssmInfo)
 	return instances[0], nil

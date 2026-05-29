@@ -28,29 +28,37 @@ func (s AwsCliStarter) CheckDependencies() error {
 }
 
 func (s AwsCliStarter) StartShell(ctx context.Context, target domain.Instance) error {
-	cmd := exec.CommandContext(ctx, "aws", s.shellArgs(target.ID)...)
+	cmd := s.ShellCommand(ctx, target)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
+func (s AwsCliStarter) ShellCommand(ctx context.Context, target domain.Instance) *exec.Cmd {
+	return exec.CommandContext(ctx, "aws", s.shellArgs(target.ID)...)
+}
+
 func (s AwsCliStarter) StartTunnel(ctx context.Context, target domain.Instance, localPort, remotePort int) error {
-	if err := validatePort(localPort, "local-port"); err != nil {
+	if err := ValidatePort(localPort, "local-port"); err != nil {
 		return err
 	}
-	if err := validatePort(remotePort, "remote-port"); err != nil {
+	if err := ValidatePort(remotePort, "remote-port"); err != nil {
 		return err
 	}
 	if err := checkLocalPortAvailable(localPort); err != nil {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, "aws", s.tunnelArgs(target.ID, localPort, remotePort)...)
+	cmd := s.TunnelCommand(ctx, target, localPort, remotePort)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func (s AwsCliStarter) TunnelCommand(ctx context.Context, target domain.Instance, localPort, remotePort int) *exec.Cmd {
+	return exec.CommandContext(ctx, "aws", s.tunnelArgs(target.ID, localPort, remotePort)...)
 }
 
 func (s AwsCliStarter) shellArgs(instanceID string) []string {
@@ -79,7 +87,7 @@ func (s AwsCliStarter) tunnelArgs(instanceID string, localPort, remotePort int) 
 	return args
 }
 
-func validatePort(port int, name string) error {
+func ValidatePort(port int, name string) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("%s must be in range 1..65535", name)
 	}

@@ -11,6 +11,7 @@ import (
 
 	"sesame/internal/app"
 	"sesame/internal/awsclient"
+	"sesame/internal/health"
 	"sesame/internal/tui"
 )
 
@@ -48,7 +49,13 @@ func newRootCommand(opts *globalOptions) *cobra.Command {
 			if err != nil {
 				return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
 			}
-			program := tea.NewProgram(tui.NewModel(clients.Auth))
+			inventory := awsclient.InventoryProvider{
+				Region: clients.Auth.Region,
+				EC2:    clients.EC2,
+				SSM:    clients.SSM,
+			}
+			identity := awsclient.IdentityProvider{Client: clients.STS}
+			program := tea.NewProgram(tui.NewModel(clients.Auth, inventory, identity, health.CheckSessionDependencies()))
 			_, err = program.Run()
 			if err != nil {
 				return &app.ExitError{Code: app.ExitRuntimeError, Err: err}

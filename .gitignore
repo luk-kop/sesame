@@ -23,6 +23,7 @@ coverage.html
 .DS_Store
 
 # Temporary files
+.cache/
 tmp/
 *.tmp
 

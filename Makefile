@@ -2,6 +2,7 @@ APP := sesame
 CMD := ./cmd/sesame
 BIN_DIR := bin
 BIN := $(BIN_DIR)/$(APP)
+GO := GOCACHE=$(CURDIR)/.cache/go-build go
 
 .PHONY: help tidy fmt test build run clean
 
@@ -15,20 +16,20 @@ help:
 	@printf '  %-10s %s\n' 'clean' 'remove build artifacts'
 
 tidy:
-	go mod tidy
+	$(GO) mod tidy
 
 fmt:
 	gofmt -w cmd internal
 
 test:
-	go test ./...
+	$(GO) test ./...
 
 build:
 	mkdir -p $(BIN_DIR)
-	go build -o $(BIN) $(CMD)
+	$(GO) build -o $(BIN) $(CMD)
 
 run:
-	go run $(CMD) --help
+	$(GO) run $(CMD) --help
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) .cache

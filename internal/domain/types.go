@@ -60,7 +60,7 @@ type ListResult struct {
 	Region    string      `json:"region"`
 	Account   string      `json:"account"`
 	ARN       string      `json:"arn"`
-	Warnings  []Warning   `json:"warnings,omitempty"`
+	Warnings  []Warning   `json:"warnings"`
 	Instances []Instance  `json:"instances"`
 }
 

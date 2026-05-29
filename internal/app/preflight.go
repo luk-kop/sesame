@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"sesame/internal/domain"
@@ -19,7 +20,11 @@ func PreflightSession(ctx context.Context, inventory InventoryProvider, identity
 
 	inst, err := inventory.GetInstance(ctx, instanceID)
 	if err != nil {
-		return domain.Instance{}, ident, &ExitError{Code: ExitRuntimeError, Err: fmt.Errorf("lookup instance %s: %w", instanceID, err)}
+		code := ExitRuntimeError
+		if errors.Is(err, domain.ErrInstanceNotFound) {
+			code = ExitPreflightFailed
+		}
+		return domain.Instance{}, ident, &ExitError{Code: code, Err: fmt.Errorf("lookup instance %s: %w", instanceID, err)}
 	}
 
 	if !opts.Force && inst.SSMStatus != domain.SSMStatusOnline {

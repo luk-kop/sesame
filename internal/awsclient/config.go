@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -17,6 +18,15 @@ import (
 type ConfigInput struct {
 	Profile string
 	Region  string
+}
+
+type EnvConfig struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	Region          string
+	DefaultRegion   string
+	Profile         string
 }
 
 type Clients struct {
@@ -40,22 +50,22 @@ func NewClients(ctx context.Context, input ConfigInput) (*Clients, error) {
 }
 
 func LoadConfig(ctx context.Context, input ConfigInput) (domain.AuthContext, aws.Config, error) {
-	envActive := os.Getenv("AWS_ACCESS_KEY_ID") != "" && os.Getenv("AWS_SECRET_ACCESS_KEY") != ""
-	region := firstNonEmpty(input.Region, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"))
+	auth := ResolveAuthContext(input, EnvConfig{
+		AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+		Region:          os.Getenv("AWS_REGION"),
+		DefaultRegion:   os.Getenv("AWS_DEFAULT_REGION"),
+		Profile:         os.Getenv("AWS_PROFILE"),
+	})
 
 	opts := make([]func(*config.LoadOptions) error, 0, 2)
-	if region != "" {
-		opts = append(opts, config.WithRegion(region))
+	if auth.Region != "" {
+		opts = append(opts, config.WithRegion(auth.Region))
 	}
 
-	auth := domain.AuthContext{Region: region}
-	if envActive {
-		auth.Mode = domain.AuthModeEnvActive
-	} else {
-		profile := firstNonEmpty(input.Profile, os.Getenv("AWS_PROFILE"), "default")
-		auth.Mode = domain.AuthModeProfileActive
-		auth.Profile = profile
-		opts = append(opts, config.WithSharedConfigProfile(profile))
+	if auth.Mode == domain.AuthModeProfileActive {
+		opts = append(opts, config.WithSharedConfigProfile(auth.Profile))
 	}
 
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
@@ -70,10 +80,27 @@ func LoadConfig(ctx context.Context, input ConfigInput) (domain.AuthContext, aws
 	return auth, cfg, nil
 }
 
+func ResolveAuthContext(input ConfigInput, env EnvConfig) domain.AuthContext {
+	region := firstNonEmpty(input.Region, env.Region, env.DefaultRegion)
+	if strings.TrimSpace(env.AccessKeyID) != "" && strings.TrimSpace(env.SecretAccessKey) != "" {
+		return domain.AuthContext{
+			Mode:   domain.AuthModeEnvActive,
+			Region: region,
+		}
+	}
+
+	return domain.AuthContext{
+		Mode:    domain.AuthModeProfileActive,
+		Profile: firstNonEmpty(input.Profile, env.Profile, "default"),
+		Region:  region,
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if value != "" {
-			return value
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
 		}
 	}
 	return ""

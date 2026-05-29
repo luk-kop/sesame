@@ -65,6 +65,12 @@ func newTunnelCommand(global *globalOptions) *cobra.Command {
 			if opts.LocalPort == 0 || opts.RemotePort == 0 {
 				return &app.ExitError{Code: app.ExitUsageError, Err: fmt.Errorf("--local-port and --remote-port are required")}
 			}
+			if err := session.ValidatePort(opts.LocalPort, "local-port"); err != nil {
+				return &app.ExitError{Code: app.ExitUsageError, Err: err}
+			}
+			if err := session.ValidatePort(opts.RemotePort, "remote-port"); err != nil {
+				return &app.ExitError{Code: app.ExitUsageError, Err: err}
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
