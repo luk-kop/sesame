@@ -8,7 +8,7 @@ A TUI for working with EC2 instances through AWS Systems Manager Session Manager
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > [!NOTE]
-> The name is stylized as **SeSaMe** — the capital `S`, `S`, `M` highlight AWS **SSM**, and the whole word nods to *"open sesame"*.
+> The name is stylized as **SeSaMe** — the capital `S`, `S`, `M` highlight AWS **SSM**. The whole word is a nod to *"open sesame"*, the magic phrase from *Ali Baba and the Forty Thieves* that opens the sealed cave: say the words and the door swings open. SeSaMe does the same for EC2 instances reachable through SSM — one keystroke and you're inside, no bastion host or SSH key to dig up.
 
 ## Overview
 
