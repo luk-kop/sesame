@@ -1,0 +1,30 @@
+# Build artifacts
+/bin/
+/dist/
+/build/
+*.exe
+*.test
+
+# Go test and coverage output
+coverage.out
+coverage.html
+*.coverprofile
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Temporary files
+tmp/
+*.tmp
+
+# Custom
+notes/
