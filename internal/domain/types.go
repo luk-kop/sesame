@@ -84,4 +84,5 @@ type Tunnel struct {
 	StartedAt  time.Time
 	State      TunnelState
 	Err        error
+	Output     string
 }

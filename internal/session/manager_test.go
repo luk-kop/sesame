@@ -2,8 +2,11 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -95,6 +98,41 @@ func TestTunnelManagerStopAll(t *testing.T) {
 	})
 }
 
+func TestTunnelManagerStopSendsInterruptBeforeKillFallback(t *testing.T) {
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	interruptFile := filepath.Join(dir, "interrupted")
+	manager := NewTunnelManagerWithPortChecker(
+		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
+		testCommandFactoryWithEnv("trap-interrupt", map[string]string{
+			"SESAME_TEST_READY_FILE":     readyFile,
+			"SESAME_TEST_INTERRUPT_FILE": interruptFile,
+		}),
+		allowPort,
+	)
+	tunnel, err := manager.Start(context.Background(), domain.Instance{ID: "i-1"}, 15441, 5432)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	waitFor(t, func() bool {
+		_, err := os.Stat(readyFile)
+		return err == nil
+	})
+
+	if err := manager.Stop(tunnel.ID); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		_, err := os.Stat(interruptFile)
+		return err == nil
+	})
+	waitFor(t, func() bool {
+		tunnels := manager.List()
+		return len(tunnels) == 1 && tunnels[0].State == domain.TunnelStateStopped
+	})
+}
+
 func TestTunnelManagerRecordsFailedProcess(t *testing.T) {
 	manager := NewTunnelManagerWithPortChecker(
 		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
@@ -109,7 +147,10 @@ func TestTunnelManagerRecordsFailedProcess(t *testing.T) {
 
 	waitFor(t, func() bool {
 		tunnels := manager.List()
-		return len(tunnels) == 1 && tunnels[0].State == domain.TunnelStateFailed && tunnels[0].Err != nil
+		return len(tunnels) == 1 &&
+			tunnels[0].State == domain.TunnelStateFailed &&
+			tunnels[0].Err != nil &&
+			tunnels[0].Output == "helper failed\n"
 	})
 }
 
@@ -129,9 +170,28 @@ func TestHelperProcess(t *testing.T) {
 	case "sleep":
 		time.Sleep(10 * time.Second)
 		os.Exit(0)
+	case "trap-interrupt":
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt)
+		defer signal.Stop(signals)
+		readyPath := os.Getenv("SESAME_TEST_READY_FILE")
+		if readyPath != "" {
+			_ = os.WriteFile(readyPath, []byte("ready"), 0o600)
+		}
+		select {
+		case <-signals:
+			path := os.Getenv("SESAME_TEST_INTERRUPT_FILE")
+			if path != "" {
+				_ = os.WriteFile(path, []byte("interrupted"), 0o600)
+			}
+			os.Exit(0)
+		case <-time.After(10 * time.Second):
+			os.Exit(3)
+		}
 	case "exit-ok":
 		os.Exit(0)
 	case "exit-fail":
+		fmt.Fprintln(os.Stderr, "helper failed")
 		os.Exit(7)
 	default:
 		os.Exit(2)
@@ -139,12 +199,20 @@ func TestHelperProcess(t *testing.T) {
 }
 
 func testCommandFactory(mode string) CommandFactory {
+	return testCommandFactoryWithEnv(mode, nil)
+}
+
+func testCommandFactoryWithEnv(mode string, extra map[string]string) CommandFactory {
 	return func(context.Context, domain.Instance, int, int) *exec.Cmd {
 		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
-		cmd.Env = append(os.Environ(),
+		env := append(os.Environ(),
 			"SESAME_TEST_HELPER=1",
 			"SESAME_TEST_HELPER_MODE="+mode,
 		)
+		for key, value := range extra {
+			env = append(env, key+"="+value)
+		}
+		cmd.Env = env
 		return cmd
 	}
 }

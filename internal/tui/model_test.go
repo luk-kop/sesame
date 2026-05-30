@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"sesame/internal/app"
 	"sesame/internal/domain"
 	"sesame/internal/health"
 	"sesame/internal/session"
@@ -66,6 +67,7 @@ func TestViewRendersInventoryAndIdentityContext(t *testing.T) {
 
 	view := updated.(Model).View()
 	for _, want := range []string{
+		"SeSaMe",
 		"Auth: profile-active dev",
 		"Region: eu-central-1",
 		"Account: 123456789012",
@@ -138,6 +140,79 @@ func TestViewRendersSelectedInstanceDetailsAndSortedTags(t *testing.T) {
 	}
 }
 
+func TestNarrowLayoutTogglesDetailsView(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 90, Height: 30})
+	model = updated.(Model)
+	updated, _ = model.Update(inventoryLoadedMsg{result: domain.ListResult{
+		Auth:   model.auth,
+		Region: "eu-central-1",
+		Instances: []domain.Instance{{
+			ID:        "i-123",
+			Name:      "api",
+			State:     "running",
+			Type:      "t3.micro",
+			PrivateIP: "10.0.0.10",
+			SSMStatus: domain.SSMStatusOnline,
+		}},
+	}})
+	model = updated.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "Instances") || strings.Contains(view, "Details") {
+		t.Fatalf("expected narrow layout to start with instance list only, got:\n%s", view)
+	}
+	if !strings.Contains(view, "d/Tab details") {
+		t.Fatalf("expected footer to advertise details toggle, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	view = model.View()
+	if !strings.Contains(view, "Details") || strings.Contains(view, "Instances") {
+		t.Fatalf("expected narrow layout to show details only after toggle, got:\n%s", view)
+	}
+	if !strings.Contains(view, "d/Tab instances") {
+		t.Fatalf("expected footer to advertise instances toggle, got:\n%s", view)
+	}
+}
+
+func TestWideLayoutKeepsListAndDetailsTogether(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
+	model = updated.(Model)
+	updated, _ = model.Update(inventoryLoadedMsg{result: domain.ListResult{
+		Auth:   model.auth,
+		Region: "eu-central-1",
+		Instances: []domain.Instance{{
+			ID:        "i-123",
+			Name:      "api",
+			State:     "running",
+			Type:      "t3.micro",
+			PrivateIP: "10.0.0.10",
+			SSMStatus: domain.SSMStatusOnline,
+		}},
+	}})
+	model = updated.(Model)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	view := model.View()
+	if !strings.Contains(view, "Instances") || !strings.Contains(view, "Details") {
+		t.Fatalf("expected wide layout to keep list and details together, got:\n%s", view)
+	}
+}
+
 func TestInstanceTableSelectionColumnDoesNotShiftDataColumns(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
@@ -162,6 +237,62 @@ func TestInstanceTableSelectionColumnDoesNotShiftDataColumns(t *testing.T) {
 	row := lines[3]
 	if got, want := strings.Index(row, "i-123"), strings.Index(header, "Instance ID"); got != want {
 		t.Fatalf("expected Instance ID column alignment got row index %d header index %d:\n%s", got, want, table)
+	}
+}
+
+func TestInstanceTableHidesPrivateIPOnMediumWidth(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.width = 90
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "api",
+		State:     "running",
+		PrivateIP: "10.0.0.10",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	table := model.renderInstanceTable()
+	if strings.Contains(table, "Private IP") || strings.Contains(table, "10.0.0.10") {
+		t.Fatalf("expected medium table to hide private IP, got:\n%s", table)
+	}
+	for _, want := range []string{"Name", "Instance ID", "State", "SSM", "running"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected medium table to contain %q, got:\n%s", want, table)
+		}
+	}
+}
+
+func TestInstanceTableUsesCompactColumnsOnNarrowWidth(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.width = 60
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "api",
+		State:     "running",
+		PrivateIP: "10.0.0.10",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	table := model.renderInstanceTable()
+	for _, notWant := range []string{"State", "Private IP", "running", "10.0.0.10"} {
+		if strings.Contains(table, notWant) {
+			t.Fatalf("expected compact table to hide %q, got:\n%s", notWant, table)
+		}
+	}
+	for _, want := range []string{"Name", "Instance ID", "SSM", "online"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected compact table to contain %q, got:\n%s", want, table)
+		}
 	}
 }
 
@@ -215,6 +346,378 @@ func TestViewRendersReadOnlyDependencyWarning(t *testing.T) {
 	view := updated.(Model).View()
 	if !strings.Contains(view, "READ-ONLY session-manager-plugin not found") {
 		t.Fatalf("expected read-only plugin warning, got:\n%s", view)
+	}
+}
+
+func TestViewRendersFriendlyWrappedCredentialError(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.loading = false
+	model.width = 64
+	model.err = errors.New("get caller identity: operation error STS: GetCallerIdentity, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found, operation error ec2imds: GetMetadata, request canceled")
+
+	view := model.View()
+	for _, want := range []string{
+		"Error: AWS credentials unavailable for profile default.",
+		"No EC2",
+		"IMDS role found.",
+		"press p to choose",
+		"another profile.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected error view to contain %q, got:\n%s", want, view)
+		}
+	}
+	for _, notWant := range []string{
+		"operation error STS",
+		"failed to refresh cached credentials",
+	} {
+		if strings.Contains(view, notWant) {
+			t.Fatalf("expected error view to hide raw text %q, got:\n%s", notWant, view)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(line, "Error: ") || strings.HasPrefix(line, "       ") {
+			if len(line) > model.width {
+				t.Fatalf("expected wrapped error line to fit width %d, got %d: %q\n%s", model.width, len(line), line, view)
+			}
+		}
+	}
+}
+
+func TestErrorWidthIsCappedInWideTerminals(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.loading = false
+	model.width = 160
+	model.err = errors.New("get caller identity: operation error STS: GetCallerIdentity, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found")
+
+	view := model.View()
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(line, "Error: ") || strings.HasPrefix(line, "       ") {
+			if len(line) > 80 {
+				t.Fatalf("expected wide terminal error line to be capped at 80 chars, got %d: %q\n%s", len(line), line, view)
+			}
+		}
+	}
+}
+
+func TestProfileSwitchReloadsInventoryFromErrorView(t *testing.T) {
+	target := domain.Instance{ID: "i-123", Name: "api", State: "running", SSMStatus: domain.SSMStatusOnline}
+	factoryCalls := 0
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			factoryCalls++
+			if auth.Profile != "dev" {
+				t.Fatalf("expected requested profile dev, got %q", auth.Profile)
+			}
+			auth.Region = "eu-west-1"
+			return auth, fakeInventory{instance: target}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+		},
+		[]string{"default", "dev", "prod"},
+	)
+	model.loading = false
+	model.err = errors.New("credentials failed")
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected profile modal to open without command")
+	}
+	if !model.profileModal || model.profileInput != "default" {
+		t.Fatalf("expected profile modal with current profile, got modal=%v input=%q", model.profileModal, model.profileInput)
+	}
+	if !strings.Contains(model.View(), "> default") || !strings.Contains(model.View(), "  dev") {
+		t.Fatalf("expected profile picker list, got:\n%s", model.View())
+	}
+
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no command while selecting profile")
+	}
+	if model.profileInput != "dev" {
+		t.Fatalf("expected selected profile dev, got %q", model.profileInput)
+	}
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected profile switch command")
+	}
+	if !model.loading || model.err != nil {
+		t.Fatalf("expected loading state with cleared error, loading=%v err=%v", model.loading, model.err)
+	}
+
+	msg := cmd()
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+	if factoryCalls != 1 {
+		t.Fatalf("expected one factory call, got %d", factoryCalls)
+	}
+	if model.auth.Profile != "dev" || model.err != nil || model.loading {
+		t.Fatalf("expected switched profile without error, auth=%#v loading=%v err=%v", model.auth, model.loading, model.err)
+	}
+	if len(model.visible) != 1 || model.visible[0].ID != "i-123" {
+		t.Fatalf("expected reloaded inventory, got %#v", model.visible)
+	}
+	if !strings.Contains(model.status, "profile switched to dev") {
+		t.Fatalf("unexpected status: %q", model.status)
+	}
+}
+
+func TestProfileSwitchIgnoredForEnvActive(t *testing.T) {
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			t.Fatal("factory should not be called for env-active")
+			return domain.AuthContext{}, nil, nil, nil
+		},
+		[]string{"default", "dev"},
+	)
+	model.loading = false
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = updated.(Model)
+	if cmd != nil || model.profileModal {
+		t.Fatalf("expected no modal or command, modal=%v cmd=%v", model.profileModal, cmd)
+	}
+	if !strings.Contains(model.status, "env credentials are active") {
+		t.Fatalf("unexpected status: %q", model.status)
+	}
+}
+
+func TestProfileSwitchBlockedWithActiveTunnel(t *testing.T) {
+	target := domain.Instance{ID: "i-123", SSMStatus: domain.SSMStatusOnline}
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			t.Fatal("factory should not be called while tunnels are active")
+			return domain.AuthContext{}, nil, nil, nil
+		},
+		[]string{"dev", "prod"},
+	)
+	model.loading = false
+	model.tunnelManager = session.NewTunnelManagerWithPortChecker(model.auth, tuiTestCommandFactory("sleep"), func(int) error { return nil })
+	tunnel, err := model.tunnelManager.Start(context.Background(), target, 15443, 22)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer model.tunnelManager.Stop(tunnel.ID)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = updated.(Model)
+	if cmd != nil || model.profileModal {
+		t.Fatalf("expected no modal or command, modal=%v cmd=%v", model.profileModal, cmd)
+	}
+	if !strings.Contains(model.status, "profile switch blocked while tunnels are active") {
+		t.Fatalf("unexpected status: %q", model.status)
+	}
+}
+
+func TestProfileSwitchInventoryErrorKeepsNewAuthContext(t *testing.T) {
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			return auth, fakeInventory{err: errors.New("inventory denied")}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+		},
+		[]string{"default", "dev"},
+	)
+	model.loading = false
+
+	msg := model.switchProfileCmd("dev")()
+	updated, _ := model.Update(msg)
+	model = updated.(Model)
+	if model.auth.Profile != "dev" {
+		t.Fatalf("expected new profile in auth context, got %#v", model.auth)
+	}
+	if model.err == nil || !strings.Contains(model.err.Error(), "inventory denied") {
+		t.Fatalf("expected inventory error, got %v", model.err)
+	}
+	if model.status != "profile switch failed" {
+		t.Fatalf("expected concise profile status, got %q", model.status)
+	}
+	if !strings.Contains(model.View(), "Auth: profile-active dev") {
+		t.Fatalf("expected header to show new profile, got:\n%s", model.View())
+	}
+}
+
+func TestRegionSwitchReloadsInventoryFromErrorView(t *testing.T) {
+	target := domain.Instance{ID: "i-456", Name: "worker", State: "running", Region: "eu-west-2", SSMStatus: domain.SSMStatusOnline}
+	factoryCalls := 0
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			factoryCalls++
+			if auth.Profile != "dev" {
+				t.Fatalf("expected profile dev, got %q", auth.Profile)
+			}
+			if auth.Region != "eu-west-2" {
+				t.Fatalf("expected requested region eu-west-2, got %q", auth.Region)
+			}
+			return auth, fakeInventory{instance: target}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+		},
+		[]string{"dev"},
+	)
+	model.loading = false
+	model.err = errors.New("region failed")
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected region modal to open without command")
+	}
+	if !model.regionModal || model.regionInput != "eu-west-1" {
+		t.Fatalf("expected region modal with current region, got modal=%v input=%q", model.regionModal, model.regionInput)
+	}
+	if !strings.Contains(model.View(), "> eu-west-1") || !strings.Contains(model.View(), "  eu-west-2") {
+		t.Fatalf("expected region picker list, got:\n%s", model.View())
+	}
+
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no command while selecting region")
+	}
+	if model.regionInput != "eu-west-2" {
+		t.Fatalf("expected selected region eu-west-2, got %q", model.regionInput)
+	}
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected region switch command")
+	}
+	if !model.loading || model.err != nil {
+		t.Fatalf("expected loading state with cleared error, loading=%v err=%v", model.loading, model.err)
+	}
+
+	msg := cmd()
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+	if factoryCalls != 1 {
+		t.Fatalf("expected one factory call, got %d", factoryCalls)
+	}
+	if model.auth.Region != "eu-west-2" || model.err != nil || model.loading {
+		t.Fatalf("expected switched region without error, auth=%#v loading=%v err=%v", model.auth, model.loading, model.err)
+	}
+	if len(model.visible) != 1 || model.visible[0].Region != "eu-west-2" {
+		t.Fatalf("expected reloaded region inventory, got %#v", model.visible)
+	}
+	if !strings.Contains(model.status, "region switched to eu-west-2") {
+		t.Fatalf("unexpected status: %q", model.status)
+	}
+}
+
+func TestRegionSwitchInventoryErrorKeepsNewAuthContext(t *testing.T) {
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			return auth, fakeInventory{err: errors.New("region denied")}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+		},
+		[]string{"dev"},
+	)
+	model.loading = false
+
+	msg := model.switchRegionCmd("eu-west-2")()
+	updated, _ := model.Update(msg)
+	model = updated.(Model)
+	if model.auth.Region != "eu-west-2" {
+		t.Fatalf("expected new region in auth context, got %#v", model.auth)
+	}
+	if model.err == nil || !strings.Contains(model.err.Error(), "region denied") {
+		t.Fatalf("expected inventory error, got %v", model.err)
+	}
+	if model.status != "region switch failed" {
+		t.Fatalf("expected concise region status, got %q", model.status)
+	}
+	if !strings.Contains(model.View(), "Region: eu-west-2") {
+		t.Fatalf("expected header to show new region, got:\n%s", model.View())
+	}
+}
+
+func TestRegionSwitchCredentialErrorDoesNotLeakRawSDKErrorIntoStatus(t *testing.T) {
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			return auth, fakeInventory{err: errors.New("get caller identity: operation error STS: GetCallerIdentity, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found")}, fakeIdentity{}, nil
+		},
+		[]string{"default"},
+	)
+	model.loading = false
+
+	msg := model.switchRegionCmd("eu-central-1")()
+	updated, _ := model.Update(msg)
+	model = updated.(Model)
+
+	view := model.View()
+	if strings.Contains(view, "Status: region switch failed: get caller identity") {
+		t.Fatalf("expected status to omit raw SDK error, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Status: region switch failed") {
+		t.Fatalf("expected concise status, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Error: AWS credentials unavailable for profile default.") {
+		t.Fatalf("expected friendly error body, got:\n%s", view)
+	}
+}
+
+func TestRegionSwitchBlockedWithActiveTunnel(t *testing.T) {
+	target := domain.Instance{ID: "i-123", SSMStatus: domain.SSMStatusOnline}
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+			t.Fatal("factory should not be called while tunnels are active")
+			return domain.AuthContext{}, nil, nil, nil
+		},
+		[]string{"dev"},
+	)
+	model.loading = false
+	model.tunnelManager = session.NewTunnelManagerWithPortChecker(model.auth, tuiTestCommandFactory("sleep"), func(int) error { return nil })
+	tunnel, err := model.tunnelManager.Start(context.Background(), target, 15440, 22)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer model.tunnelManager.Stop(tunnel.ID)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd != nil || model.regionModal {
+		t.Fatalf("expected no modal or command, modal=%v cmd=%v", model.regionModal, cmd)
+	}
+	if !strings.Contains(model.status, "region switch blocked while tunnels are active") {
+		t.Fatalf("unexpected status: %q", model.status)
 	}
 }
 
@@ -406,6 +909,51 @@ func TestOpenTunnelModalForOnlineInstance(t *testing.T) {
 	if !strings.Contains(got.View(), "Port forwarding") {
 		t.Fatalf("expected modal in view, got:\n%s", got.View())
 	}
+	if !strings.Contains(got.View(), "preset: SSH") {
+		t.Fatalf("expected default SSH preset in modal, got:\n%s", got.View())
+	}
+}
+
+func TestTunnelModalCyclesPortPresets(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.tunnelModal = true
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no command while cycling presets")
+	}
+	if got.localPort != "15432" || got.remotePort != "5432" {
+		t.Fatalf("expected PostgreSQL preset ports, got local=%q remote=%q", got.localPort, got.remotePort)
+	}
+	if !strings.Contains(got.View(), "preset: PostgreSQL") {
+		t.Fatalf("expected PostgreSQL preset in modal, got:\n%s", got.View())
+	}
+	if !strings.Contains(got.footer(), "s preset") {
+		t.Fatalf("expected footer to advertise presets, got %q", got.footer())
+	}
+}
+
+func TestTunnelModalShowsCustomPresetForManualPorts(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.tunnelModal = true
+	model.localPort = "19999"
+	model.remotePort = "9999"
+
+	view := model.View()
+	if !strings.Contains(view, "preset: custom") {
+		t.Fatalf("expected custom preset in modal, got:\n%s", view)
+	}
 }
 
 func TestTunnelModalRejectsInvalidPort(t *testing.T) {
@@ -533,6 +1081,30 @@ func TestTunnelViewClearsFinished(t *testing.T) {
 	}
 }
 
+func TestTunnelViewShowsProcessOutputOnFailure(t *testing.T) {
+	target := domain.Instance{ID: "i-123", SSMStatus: domain.SSMStatusOnline}
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.tunnelManager = session.NewTunnelManagerWithPortChecker(model.auth, tuiTestCommandFactory("exit-fail"), func(int) error { return nil })
+	if _, err := model.tunnelManager.Start(context.Background(), target, 15442, 5432); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	waitForTUITest(t, func() bool {
+		tunnels := model.tunnelManager.List()
+		return len(tunnels) == 1 && tunnels[0].State == domain.TunnelStateFailed
+	})
+
+	model.view = viewTunnels
+	view := model.View()
+	if !strings.Contains(view, "failed") || !strings.Contains(view, "tui helper failed") {
+		t.Fatalf("expected failed tunnel output in view, got:\n%s", view)
+	}
+}
+
 func TestQuitWithActiveTunnelRequiresConfirmation(t *testing.T) {
 	target := domain.Instance{ID: "i-123", SSMStatus: domain.SSMStatusOnline}
 	model := NewModel(
@@ -598,7 +1170,7 @@ func TestHelpOverlayOpensAndCloses(t *testing.T) {
 		t.Fatal("expected help to be open")
 	}
 	view := model.View()
-	for _, want := range []string{"Help", "Global", "Instances", "Port forwarding modal", "Tunnels", "Close help"} {
+	for _, want := range []string{"Help", "Global", "Instances", "d / Tab", "Port forwarding modal", "Tunnels", "Close help"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected help to contain %q, got:\n%s", want, view)
 		}
@@ -622,6 +1194,9 @@ func TestTUITunnelHelperProcess(t *testing.T) {
 	case "sleep":
 		time.Sleep(10 * time.Second)
 		os.Exit(0)
+	case "exit-fail":
+		_, _ = os.Stderr.WriteString("tui helper failed\n")
+		os.Exit(7)
 	default:
 		os.Exit(2)
 	}

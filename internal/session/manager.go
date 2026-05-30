@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -12,6 +14,9 @@ import (
 
 type CommandFactory func(ctx context.Context, target domain.Instance, localPort, remotePort int) *exec.Cmd
 type PortChecker func(port int) error
+
+const tunnelStopGracePeriod = 2 * time.Second
+const tunnelOutputLimit = 8 * 1024
 
 type TunnelManager struct {
 	mu       sync.Mutex
@@ -25,6 +30,8 @@ type managedTunnel struct {
 	tunnel   domain.Tunnel
 	cancel   context.CancelFunc
 	cmd      *exec.Cmd
+	output   *tailBuffer
+	outputWG sync.WaitGroup
 	stopping bool
 }
 
@@ -78,15 +85,22 @@ func (m *TunnelManager) Start(ctx context.Context, target domain.Instance, local
 		State:      domain.TunnelStateStarting,
 	}
 	cmd := m.commands(tunnelCtx, target, localPort, remotePort)
-	managed := &managedTunnel{tunnel: tunnel, cancel: cancel, cmd: cmd}
+	managed := &managedTunnel{tunnel: tunnel, cancel: cancel, cmd: cmd, output: newTailBuffer(tunnelOutputLimit)}
+	if err := managed.captureOutput(); err != nil {
+		cancel()
+		m.mu.Unlock()
+		return domain.Tunnel{}, err
+	}
 	m.tunnels[key] = managed
 	m.mu.Unlock()
 
 	if err := cmd.Start(); err != nil {
 		cancel()
+		managed.outputWG.Wait()
 		m.mu.Lock()
 		managed.tunnel.State = domain.TunnelStateFailed
 		managed.tunnel.Err = err
+		managed.tunnel.Output = managed.output.String()
 		m.mu.Unlock()
 		return managed.tunnel, err
 	}
@@ -112,13 +126,11 @@ func (m *TunnelManager) Stop(id string) error {
 		return nil
 	}
 	managed.stopping = true
-	managed.cancel()
 	cmd := managed.cmd
+	cancel := managed.cancel
 	m.mu.Unlock()
 
-	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
+	stopProcessGracefully(cmd, cancel)
 	return nil
 }
 
@@ -167,12 +179,23 @@ func (m *TunnelManager) ClearFinished() {
 func (m *TunnelManager) wait(id string, cmd *exec.Cmd) {
 	err := cmd.Wait()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	managed, ok := m.tunnels[id]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
+	m.mu.Unlock()
+
+	managed.outputWG.Wait()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	managed, ok = m.tunnels[id]
+	if !ok {
+		return
+	}
+	managed.tunnel.Output = managed.output.String()
 	if managed.stopping {
 		managed.tunnel.State = domain.TunnelStateStopped
 		return
@@ -185,6 +208,80 @@ func (m *TunnelManager) wait(id string, cmd *exec.Cmd) {
 	managed.tunnel.State = domain.TunnelStateStopped
 }
 
+func (t *managedTunnel) captureOutput() error {
+	if t.cmd.Stdout == nil {
+		stdout, err := t.cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		t.outputWG.Add(1)
+		go func() {
+			defer t.outputWG.Done()
+			_, _ = io.Copy(t.output, stdout)
+		}()
+	}
+	if t.cmd.Stderr == nil {
+		stderr, err := t.cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
+		t.outputWG.Add(1)
+		go func() {
+			defer t.outputWG.Done()
+			_, _ = io.Copy(t.output, stderr)
+		}()
+	}
+	return nil
+}
+
+func stopProcessGracefully(cmd *exec.Cmd, cancel context.CancelFunc) {
+	if cmd == nil || cmd.Process == nil {
+		cancel()
+		return
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		cancel()
+		_ = cmd.Process.Kill()
+		return
+	}
+
+	go func() {
+		timer := time.NewTimer(tunnelStopGracePeriod)
+		defer timer.Stop()
+		<-timer.C
+		cancel()
+		_ = cmd.Process.Kill()
+	}()
+}
+
 func tunnelKey(auth domain.AuthContext, instanceID string, localPort int) string {
 	return fmt.Sprintf("%s:%s:%s:%d", auth.Profile, auth.Region, instanceID, localPort)
+}
+
+type tailBuffer struct {
+	mu    sync.Mutex
+	limit int
+	data  []byte
+}
+
+func newTailBuffer(limit int) *tailBuffer {
+	return &tailBuffer{limit: limit}
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.data = append(b.data, p...)
+	if b.limit > 0 && len(b.data) > b.limit {
+		b.data = append([]byte(nil), b.data[len(b.data)-b.limit:]...)
+	}
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return string(b.data)
 }

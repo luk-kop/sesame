@@ -58,30 +58,97 @@ const (
 )
 
 const detailsTagLimit = 8
+const wideDetailsMinWidth = 132
+const mediumTableMinWidth = 96
+const compactTableMinWidth = 72
+
+type tunnelPreset struct {
+	Name       string
+	LocalPort  string
+	RemotePort string
+}
+
+var tunnelPresets = []tunnelPreset{
+	{Name: "SSH", LocalPort: "10022", RemotePort: "22"},
+	{Name: "PostgreSQL", LocalPort: "15432", RemotePort: "5432"},
+	{Name: "MySQL", LocalPort: "13306", RemotePort: "3306"},
+	{Name: "Redis", LocalPort: "16379", RemotePort: "6379"},
+	{Name: "HTTP", LocalPort: "18080", RemotePort: "80"},
+	{Name: "HTTPS", LocalPort: "18443", RemotePort: "443"},
+}
+
+var defaultRegionOptions = []string{
+	"us-east-1",
+	"us-east-2",
+	"us-west-1",
+	"us-west-2",
+	"af-south-1",
+	"ap-east-1",
+	"ap-east-2",
+	"ap-south-1",
+	"ap-south-2",
+	"ap-southeast-1",
+	"ap-southeast-2",
+	"ap-southeast-3",
+	"ap-southeast-4",
+	"ap-southeast-5",
+	"ap-southeast-6",
+	"ap-southeast-7",
+	"ap-northeast-1",
+	"ap-northeast-2",
+	"ap-northeast-3",
+	"ca-central-1",
+	"ca-west-1",
+	"eu-central-1",
+	"eu-central-2",
+	"eu-west-1",
+	"eu-west-2",
+	"eu-west-3",
+	"eu-south-1",
+	"eu-south-2",
+	"eu-north-1",
+	"il-central-1",
+	"me-central-1",
+	"me-south-1",
+	"mx-central-1",
+	"sa-east-1",
+}
 
 type Model struct {
-	auth           domain.AuthContext
-	inventory      app.InventoryProvider
-	identity       app.IdentityProvider
-	dependencies   health.DependencyStatus
-	result         domain.ListResult
-	visible        []domain.Instance
-	loading        bool
-	err            error
-	selected       int
-	status         string
-	view           activeView
-	shellStarting  bool
-	searchActive   bool
-	searchQuery    string
-	tunnelManager  *session.TunnelManager
-	tunnelModal    bool
-	tunnelField    int
-	localPort      string
-	remotePort     string
-	tunnelSelected int
-	quitConfirm    bool
-	helpOpen       bool
+	auth            domain.AuthContext
+	inventory       app.InventoryProvider
+	identity        app.IdentityProvider
+	dependencies    health.DependencyStatus
+	factory         providerFactory
+	profileOptions  []string
+	regionOptions   []string
+	result          domain.ListResult
+	visible         []domain.Instance
+	loading         bool
+	err             error
+	width           int
+	selected        int
+	status          string
+	view            activeView
+	shellStarting   bool
+	searchActive    bool
+	searchQuery     string
+	tunnelManager   *session.TunnelManager
+	tunnelModal     bool
+	profileModal    bool
+	profileInput    string
+	profileSelected int
+	regionModal     bool
+	regionInput     string
+	regionSelected  int
+	detailsFocused  bool
+	tunnelField     int
+	tunnelPreset    int
+	localPort       string
+	remotePort      string
+	tunnelSelected  int
+	quitConfirm     bool
+	helpOpen        bool
 }
 
 type inventoryLoadedMsg struct {
@@ -105,16 +172,41 @@ type tunnelStartedMsg struct {
 
 type tunnelTickMsg struct{}
 
+type providerFactory func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error)
+
+type profileChangedMsg struct {
+	auth      domain.AuthContext
+	inventory app.InventoryProvider
+	identity  app.IdentityProvider
+	result    domain.ListResult
+	err       error
+}
+
+type regionChangedMsg struct {
+	auth      domain.AuthContext
+	inventory app.InventoryProvider
+	identity  app.IdentityProvider
+	result    domain.ListResult
+	err       error
+}
+
 func NewModel(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, dependencies health.DependencyStatus) Model {
+	return NewModelWithProviderFactory(auth, inventory, identity, dependencies, nil, nil)
+}
+
+func NewModelWithProviderFactory(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, dependencies health.DependencyStatus, factory providerFactory, profiles []string) Model {
 	return Model{
-		auth:          auth,
-		inventory:     inventory,
-		identity:      identity,
-		dependencies:  dependencies,
-		loading:       true,
-		tunnelManager: session.NewTunnelManager(auth, nil),
-		localPort:     "10022",
-		remotePort:    "22",
+		auth:           auth,
+		inventory:      inventory,
+		identity:       identity,
+		dependencies:   dependencies,
+		factory:        factory,
+		profileOptions: normalizeProfileOptions(profiles, auth.Profile),
+		regionOptions:  normalizeRegionOptions(defaultRegionOptions, auth.Region),
+		loading:        true,
+		tunnelManager:  session.NewTunnelManager(auth, nil),
+		localPort:      "10022",
+		remotePort:     "22",
 	}
 }
 
@@ -124,6 +216,8 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		if m.helpOpen {
 			return m.updateHelp(msg)
@@ -133,6 +227,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.tunnelModal {
 			return m.updateTunnelModal(msg)
+		}
+		if m.profileModal {
+			return m.updateProfileModal(msg)
+		}
+		if m.regionModal {
+			return m.updateRegionModal(msg)
 		}
 		if m.searchActive {
 			return m.updateSearch(msg)
@@ -171,12 +271,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.openTunnelModal()
+		case "p":
+			return m.openProfileModal()
+		case "g":
+			return m.openRegionModal()
 		case "/":
 			if m.view == viewTunnels || m.view == viewHealth {
 				return m, nil
 			}
 			m.searchActive = true
 			m.status = ""
+		case "tab", "d":
+			if m.view == viewInstances && m.isNarrowLayout() {
+				m.detailsFocused = !m.detailsFocused
+				if m.detailsFocused {
+					m.status = "details view"
+				} else {
+					m.status = "instances view"
+				}
+			}
 		case "x":
 			if m.view == viewTunnels {
 				return m.stopSelectedTunnel()
@@ -233,6 +346,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tunnelTickMsg:
 		return m, tunnelTick()
+	case profileChangedMsg:
+		m.loading = false
+		m.err = msg.err
+		if msg.err != nil {
+			if msg.auth.Mode != "" {
+				m.auth = msg.auth
+				m.inventory = msg.inventory
+				m.identity = msg.identity
+				m.tunnelManager = session.NewTunnelManager(m.auth, nil)
+			}
+			m.status = "profile switch failed"
+			return m, nil
+		}
+		m.auth = msg.auth
+		m.inventory = msg.inventory
+		m.identity = msg.identity
+		m.result = msg.result
+		m.tunnelManager = session.NewTunnelManager(m.auth, nil)
+		m.status = fmt.Sprintf("profile switched to %s", m.auth.Profile)
+		m.applySearch("")
+	case regionChangedMsg:
+		m.loading = false
+		m.err = msg.err
+		if msg.err != nil {
+			if msg.auth.Mode != "" {
+				m.auth = msg.auth
+				m.inventory = msg.inventory
+				m.identity = msg.identity
+				m.tunnelManager = session.NewTunnelManager(m.auth, nil)
+			}
+			m.status = "region switch failed"
+			return m, nil
+		}
+		m.auth = msg.auth
+		m.inventory = msg.inventory
+		m.identity = msg.identity
+		m.result = msg.result
+		m.tunnelManager = session.NewTunnelManager(m.auth, nil)
+		m.status = fmt.Sprintf("region switched to %s", m.auth.Region)
+		m.applySearch("")
 	}
 	return m, nil
 }
@@ -250,7 +403,7 @@ func (m Model) View() string {
 	case m.loading:
 		b.WriteString("Loading instances...\n")
 	case m.err != nil:
-		fmt.Fprintf(&b, "Error: %v\n", m.err)
+		b.WriteString(m.renderError())
 	case len(m.visible) == 0:
 		b.WriteString("No instances found.\n")
 	default:
@@ -259,6 +412,14 @@ func (m Model) View() string {
 	if m.tunnelModal {
 		b.WriteString("\n")
 		b.WriteString(m.renderTunnelModal())
+	}
+	if m.profileModal {
+		b.WriteString("\n")
+		b.WriteString(m.renderProfileModal())
+	}
+	if m.regionModal {
+		b.WriteString("\n")
+		b.WriteString(m.renderRegionModal())
 	}
 	if m.quitConfirm {
 		b.WriteString("\n")
@@ -431,6 +592,9 @@ func (m Model) updateTunnelModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m.startTunnel()
 	case tea.KeyRunes:
+		if msg.String() == "s" {
+			return m.applyNextTunnelPreset()
+		}
 		for _, r := range msg.Runes {
 			if r < '0' || r > '9' {
 				continue
@@ -442,6 +606,144 @@ func (m Model) updateTunnelModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	return m, nil
+}
+
+func (m Model) applyNextTunnelPreset() (tea.Model, tea.Cmd) {
+	if len(tunnelPresets) == 0 {
+		return m, nil
+	}
+	m.tunnelPreset = (m.tunnelPreset + 1) % len(tunnelPresets)
+	preset := tunnelPresets[m.tunnelPreset]
+	m.localPort = preset.LocalPort
+	m.remotePort = preset.RemotePort
+	m.status = fmt.Sprintf("tunnel preset: %s", preset.Name)
+	return m, nil
+}
+
+func (m Model) updateProfileModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.profileModal = false
+		m.profileInput = ""
+		return m, nil
+	case tea.KeyEnter:
+		profile := strings.TrimSpace(m.profileInput)
+		if profile == "" {
+			m.status = "profile name is required"
+			return m, nil
+		}
+		if profile == m.auth.Profile {
+			m.profileModal = false
+			m.profileInput = ""
+			m.status = fmt.Sprintf("profile unchanged: %s", profile)
+			return m, nil
+		}
+		m.profileModal = false
+		m.profileInput = ""
+		m.loading = true
+		m.err = nil
+		m.status = fmt.Sprintf("switching profile to %s", profile)
+		return m, m.switchProfileCmd(profile)
+	case tea.KeyUp:
+		if m.profileSelected > 0 {
+			m.profileSelected--
+			m.profileInput = m.profileOptions[m.profileSelected]
+		}
+	case tea.KeyDown:
+		if m.profileSelected < len(m.profileOptions)-1 {
+			m.profileSelected++
+			m.profileInput = m.profileOptions[m.profileSelected]
+		}
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.profileInput != "" {
+			runes := []rune(m.profileInput)
+			m.profileInput = string(runes[:len(runes)-1])
+		}
+	case tea.KeyRunes:
+		m.profileInput += string(msg.Runes)
+	}
+	return m, nil
+}
+
+func (m Model) openProfileModal() (tea.Model, tea.Cmd) {
+	if m.auth.Mode == domain.AuthModeEnvActive {
+		m.status = "profile switch ignored while env credentials are active"
+		return m, nil
+	}
+	if m.tunnelManager != nil && m.tunnelManager.HasActive() {
+		m.status = "profile switch blocked while tunnels are active"
+		return m, nil
+	}
+	if m.factory == nil {
+		m.status = "profile switch unavailable"
+		return m, nil
+	}
+	m.profileInput = m.auth.Profile
+	m.profileSelected = profileIndex(m.profileOptions, m.auth.Profile)
+	m.profileModal = true
+	m.status = ""
+	return m, nil
+}
+
+func (m Model) updateRegionModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.regionModal = false
+		m.regionInput = ""
+		return m, nil
+	case tea.KeyEnter:
+		region := strings.TrimSpace(m.regionInput)
+		if region == "" {
+			m.status = "region is required"
+			return m, nil
+		}
+		if region == m.auth.Region {
+			m.regionModal = false
+			m.regionInput = ""
+			m.status = fmt.Sprintf("region unchanged: %s", region)
+			return m, nil
+		}
+		m.regionModal = false
+		m.regionInput = ""
+		m.loading = true
+		m.err = nil
+		m.status = fmt.Sprintf("switching region to %s", region)
+		return m, m.switchRegionCmd(region)
+	case tea.KeyUp:
+		if m.regionSelected > 0 {
+			m.regionSelected--
+			m.regionInput = m.regionOptions[m.regionSelected]
+		}
+	case tea.KeyDown:
+		if m.regionSelected < len(m.regionOptions)-1 {
+			m.regionSelected++
+			m.regionInput = m.regionOptions[m.regionSelected]
+		}
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.regionInput != "" {
+			runes := []rune(m.regionInput)
+			m.regionInput = string(runes[:len(runes)-1])
+		}
+	case tea.KeyRunes:
+		m.regionInput += string(msg.Runes)
+	}
+	return m, nil
+}
+
+func (m Model) openRegionModal() (tea.Model, tea.Cmd) {
+	if m.tunnelManager != nil && m.tunnelManager.HasActive() {
+		m.status = "region switch blocked while tunnels are active"
+		return m, nil
+	}
+	if m.factory == nil {
+		m.status = "region switch unavailable"
+		return m, nil
+	}
+	m.regionInput = m.auth.Region
+	m.regionSelected = optionIndex(m.regionOptions, m.auth.Region)
+	m.regionModal = true
+	m.status = ""
 	return m, nil
 }
 
@@ -482,10 +784,64 @@ func (m Model) startTunnelCmd(instanceID string, localPort, remotePort int) tea.
 	}
 }
 
+func (m Model) switchProfileCmd(profile string) tea.Cmd {
+	return func() tea.Msg {
+		if m.factory == nil {
+			return profileChangedMsg{err: errors.New("profile switch unavailable")}
+		}
+		auth, inventory, identity, err := m.factory(context.Background(), domain.AuthContext{
+			Mode:    domain.AuthModeProfileActive,
+			Profile: profile,
+			Region:  m.auth.Region,
+		})
+		if err != nil {
+			return profileChangedMsg{err: err}
+		}
+		result, err := app.ListInstances(context.Background(), auth, inventory, identity, app.ListFilters{})
+		return profileChangedMsg{
+			auth:      auth,
+			inventory: inventory,
+			identity:  identity,
+			result:    result,
+			err:       err,
+		}
+	}
+}
+
+func (m Model) switchRegionCmd(region string) tea.Cmd {
+	return func() tea.Msg {
+		if m.factory == nil {
+			return regionChangedMsg{err: errors.New("region switch unavailable")}
+		}
+		auth, inventory, identity, err := m.factory(context.Background(), domain.AuthContext{
+			Mode:    m.auth.Mode,
+			Profile: m.auth.Profile,
+			Region:  region,
+		})
+		if err != nil {
+			return regionChangedMsg{err: err}
+		}
+		result, err := app.ListInstances(context.Background(), auth, inventory, identity, app.ListFilters{})
+		return regionChangedMsg{
+			auth:      auth,
+			inventory: inventory,
+			identity:  identity,
+			result:    result,
+			err:       err,
+		}
+	}
+}
+
 func (m Model) renderInstances() string {
 	list := m.renderInstanceTable()
 	details := m.renderDetails()
 	if details == "" {
+		return panelStyle.Render(list)
+	}
+	if m.isNarrowLayout() {
+		if m.detailsFocused {
+			return panelStyle.Render(details)
+		}
 		return panelStyle.Render(list)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, panelStyle.Render(list), "  ", panelStyle.Render(details))
@@ -493,7 +849,7 @@ func (m Model) renderInstances() string {
 
 func (m Model) renderHeader() string {
 	var lines []string
-	lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Center, titleStyle.Render("Sesame"), "  ", subtleStyle.Render("AWS SSM Session Manager")))
+	lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Center, titleStyle.Render("SeSaMe"), "  ", subtleStyle.Render("AWS SSM Session Manager")))
 
 	context := []string{
 		renderKV("Auth", m.authLabel()),
@@ -535,21 +891,23 @@ func (m Model) renderHeader() string {
 func (m Model) renderInstanceTable() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", headerStyle.Render("Instances"))
-	fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-10s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
-	fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 88)))
+	switch {
+	case m.isCompactTable():
+		fmt.Fprintf(&b, "%-2s%-16s  %-19s  %-13s\n", "", "Name", "Instance ID", "SSM")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 54)))
+	case m.isMediumTable():
+		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s\n", "", "Name", "Instance ID", "State", "SSM")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 68)))
+	default:
+		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-10s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 88)))
+	}
 	for i, inst := range m.visible {
 		cursor := " "
 		if i == m.selected {
 			cursor = ">"
 		}
-		row := fmt.Sprintf("%-2s%-22s  %-19s  %-10s  %-13s  %-15s",
-			cursor,
-			trim(inst.Name, 22),
-			trim(inst.ID, 19),
-			trim(inst.State, 12),
-			trim(string(inst.SSMStatus), 13),
-			trim(inst.PrivateIP, 15),
-		)
+		row := m.renderInstanceRow(cursor, inst)
 		if i == m.selected {
 			row = selectedRowStyle.Render(row)
 		}
@@ -557,6 +915,35 @@ func (m Model) renderInstanceTable() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func (m Model) renderInstanceRow(cursor string, inst domain.Instance) string {
+	switch {
+	case m.isCompactTable():
+		return fmt.Sprintf("%-2s%-16s  %-19s  %-13s",
+			cursor,
+			trim(inst.Name, 16),
+			trim(inst.ID, 19),
+			trim(string(inst.SSMStatus), 13),
+		)
+	case m.isMediumTable():
+		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-13s",
+			cursor,
+			trim(inst.Name, 18),
+			trim(inst.ID, 19),
+			trim(inst.State, 10),
+			trim(string(inst.SSMStatus), 13),
+		)
+	default:
+		return fmt.Sprintf("%-2s%-22s  %-19s  %-10s  %-13s  %-15s",
+			cursor,
+			trim(inst.Name, 22),
+			trim(inst.ID, 19),
+			trim(inst.State, 10),
+			trim(string(inst.SSMStatus), 13),
+			trim(inst.PrivateIP, 15),
+		)
+	}
 }
 
 func (m Model) renderDetails() string {
@@ -615,7 +1002,24 @@ func (m Model) renderTunnelModal() string {
 	} else {
 		remoteMarker = ">"
 	}
-	return fmt.Sprintf("Port forwarding\n%s local port:  %s\n%s remote port: %s\nEnter start  Tab switch  Esc cancel\n", localMarker, m.localPort, remoteMarker, m.remotePort)
+	preset := currentTunnelPresetName(m.localPort, m.remotePort)
+	return fmt.Sprintf("Port forwarding\npreset: %s\n%s local port:  %s\n%s remote port: %s\nEnter start  Tab switch  s preset  Esc cancel\n", preset, localMarker, m.localPort, remoteMarker, m.remotePort)
+}
+
+func (m Model) renderProfileModal() string {
+	var b strings.Builder
+	b.WriteString("Profile\n")
+	b.WriteString(renderOptionList(m.profileOptions, m.profileSelected))
+	fmt.Fprintf(&b, "\nname: %s\n↑↓ select  type edit  Enter switch  Esc cancel\n", m.profileInput)
+	return b.String()
+}
+
+func (m Model) renderRegionModal() string {
+	var b strings.Builder
+	b.WriteString("Region\n")
+	b.WriteString(renderOptionList(m.regionOptions, m.regionSelected))
+	fmt.Fprintf(&b, "\nregion: %s\n↑↓ select  type edit  Enter switch  Esc cancel\n", m.regionInput)
+	return b.String()
 }
 
 func (m Model) renderQuitConfirm() string {
@@ -636,8 +1040,11 @@ func (m Model) renderHelp() string {
 		"  r               refresh inventory",
 		"  Enter           start shell session",
 		"  f               open port forwarding modal",
+		"  d / Tab         toggle details on narrow terminals",
 		"  t               show tunnels",
 		"  h               show health",
+		"  p               choose AWS profile",
+		"  g               choose AWS region",
 		"",
 		"Search",
 		"  type            filter visible instances",
@@ -646,6 +1053,7 @@ func (m Model) renderHelp() string {
 		"",
 		"Port forwarding modal",
 		"  Tab             switch field",
+		"  s               cycle port preset",
 		"  Enter           start tunnel",
 		"  Esc             cancel",
 		"",
@@ -693,6 +1101,17 @@ func (m Model) renderHealth() string {
 	return b.String()
 }
 
+func (m Model) renderError() string {
+	return renderError(formatTUIError(m.err, m.auth), m.contentWidth())
+}
+
+func (m Model) contentWidth() int {
+	if m.width <= 0 {
+		return 80
+	}
+	return min(max(20, m.width), 80)
+}
+
 func (m Model) renderTunnels() string {
 	tunnels := m.tunnels()
 	if len(tunnels) == 0 {
@@ -707,7 +1126,7 @@ func (m Model) renderTunnels() string {
 		}
 		errText := ""
 		if tunnel.Err != nil && !errors.Is(tunnel.Err, context.Canceled) {
-			errText = " " + trim(tunnel.Err.Error(), 30)
+			errText = " " + trim(tunnelDiagnostic(tunnel), 30)
 		}
 		fmt.Fprintf(&b, "%s %-8s  %-20s  %-10d  %-10d  %-12s%s\n",
 			cursor,
@@ -720,6 +1139,18 @@ func (m Model) renderTunnels() string {
 		)
 	}
 	return b.String()
+}
+
+func tunnelDiagnostic(tunnel domain.Tunnel) string {
+	output := strings.TrimSpace(tunnel.Output)
+	if output != "" {
+		lines := strings.Split(output, "\n")
+		return lines[len(lines)-1]
+	}
+	if tunnel.Err != nil {
+		return tunnel.Err.Error()
+	}
+	return ""
 }
 
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -825,7 +1256,13 @@ func (m Model) footer() string {
 		return "Enter/y stop tunnels and quit  Esc/n cancel"
 	}
 	if m.tunnelModal {
-		return "Enter start  Tab switch field  Esc cancel"
+		return "Enter start  Tab switch field  s preset  Esc cancel"
+	}
+	if m.profileModal {
+		return "Enter switch profile  Esc cancel"
+	}
+	if m.regionModal {
+		return "Enter switch region  Esc cancel"
 	}
 	if m.view == viewTunnels {
 		return "↑↓ move  x stop  c clear finished  Esc instances  q quit"
@@ -836,7 +1273,25 @@ func (m Model) footer() string {
 	if m.searchActive {
 		return "type to search  Esc clear/close  Enter shell"
 	}
+	if m.view == viewInstances && m.isNarrowLayout() {
+		if m.detailsFocused {
+			return "d/Tab instances  ↑↓ move  Enter shell  f tunnel  q quit"
+		}
+		return "↑↓ move  d/Tab details  / search  Enter shell  f tunnel  q quit"
+	}
 	return components.Footer()
+}
+
+func (m Model) isNarrowLayout() bool {
+	return m.width > 0 && m.width < wideDetailsMinWidth
+}
+
+func (m Model) isCompactTable() bool {
+	return m.width > 0 && m.width < compactTableMinWidth
+}
+
+func (m Model) isMediumTable() bool {
+	return m.width > 0 && m.width < mediumTableMinWidth && !m.isCompactTable()
 }
 
 func (m Model) tunnels() []domain.Tunnel {
@@ -909,6 +1364,176 @@ func checkMark(ok bool) string {
 
 func renderKV(label, value string) string {
 	return labelStyle.Render(label+":") + " " + valueStyle.Render(value)
+}
+
+func renderOptionList(options []string, selected int) string {
+	var b strings.Builder
+	start := max(0, selected-3)
+	end := min(len(options), start+7)
+	if end-start < 7 {
+		start = max(0, end-7)
+	}
+	for i := start; i < end; i++ {
+		cursor := " "
+		if i == selected {
+			cursor = ">"
+		}
+		fmt.Fprintf(&b, "%s %s\n", cursor, options[i])
+	}
+	return b.String()
+}
+
+func currentTunnelPresetName(localPort, remotePort string) string {
+	for _, preset := range tunnelPresets {
+		if preset.LocalPort == localPort && preset.RemotePort == remotePort {
+			return preset.Name
+		}
+	}
+	return "custom"
+}
+
+func normalizeProfileOptions(profiles []string, current string) []string {
+	seen := map[string]struct{}{}
+	var normalized []string
+	for _, profile := range profiles {
+		profile = strings.TrimSpace(profile)
+		if profile == "" {
+			continue
+		}
+		if _, ok := seen[profile]; ok {
+			continue
+		}
+		seen[profile] = struct{}{}
+		normalized = append(normalized, profile)
+	}
+	current = strings.TrimSpace(current)
+	if current != "" {
+		if _, ok := seen[current]; !ok {
+			normalized = append(normalized, current)
+		}
+	}
+	if len(normalized) == 0 {
+		normalized = append(normalized, "default")
+	}
+	sort.Strings(normalized)
+	return normalized
+}
+
+func normalizeRegionOptions(regions []string, current string) []string {
+	normalized := normalizeProfileOptions(regions, current)
+	if current == "" {
+		return normalized
+	}
+	return normalized
+}
+
+func profileIndex(profiles []string, profile string) int {
+	return optionIndex(profiles, profile)
+}
+
+func optionIndex(options []string, value string) int {
+	for i, candidate := range options {
+		if candidate == value {
+			return i
+		}
+	}
+	return 0
+}
+
+func renderError(message string, width int) string {
+	const prefix = "Error: "
+	if width <= len(prefix) {
+		width = len(prefix) + 20
+	}
+	lines := wrapText(message, width-len(prefix))
+	if len(lines) == 0 {
+		lines = []string{"unknown error"}
+	}
+
+	var b strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			fmt.Fprintf(&b, "%s%s\n", prefix, line)
+			continue
+		}
+		fmt.Fprintf(&b, "%s%s\n", strings.Repeat(" ", len(prefix)), line)
+	}
+	return b.String()
+}
+
+func formatTUIError(err error, auth domain.AuthContext) string {
+	if err == nil {
+		return "unknown error"
+	}
+
+	raw := strings.TrimSpace(err.Error())
+	if strings.Contains(raw, "failed to refresh cached credentials") && strings.Contains(raw, "no EC2 IMDS role found") {
+		return fmt.Sprintf(
+			"AWS credentials unavailable for %s. No EC2 IMDS role found. Check credentials or press p to choose another profile.",
+			authSourceLabel(auth),
+		)
+	}
+	return cleanupErrorText(raw)
+}
+
+func authSourceLabel(auth domain.AuthContext) string {
+	if auth.Mode == domain.AuthModeProfileActive && auth.Profile != "" {
+		return "profile " + auth.Profile
+	}
+	if auth.Mode == domain.AuthModeEnvActive {
+		return "environment credentials"
+	}
+	return "current AWS configuration"
+}
+
+func cleanupErrorText(value string) string {
+	value = strings.TrimSpace(value)
+	replacements := []string{
+		"operation error STS: GetCallerIdentity, ",
+		"operation error EC2: DescribeInstances, ",
+		"operation error SSM: DescribeInstanceInformation, ",
+	}
+	for _, old := range replacements {
+		value = strings.ReplaceAll(value, old, "")
+	}
+	return value
+}
+
+func wrapText(value string, width int) []string {
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return nil
+	}
+	if width < 10 {
+		width = 10
+	}
+
+	lines := make([]string, 0, len(words))
+	line := ""
+	for _, word := range words {
+		for len(word) > width {
+			if line != "" {
+				lines = append(lines, line)
+				line = ""
+			}
+			lines = append(lines, word[:width])
+			word = word[width:]
+		}
+		if line == "" {
+			line = word
+			continue
+		}
+		if len(line)+1+len(word) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		line += " " + word
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func styledSSMStatus(status domain.SSMStatus) string {
