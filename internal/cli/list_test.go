@@ -89,7 +89,9 @@ func TestWriteTableRendersHumanColumns(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	writeTable(&buf, result)
+	if err := writeTable(&buf, result); err != nil {
+		t.Fatalf("writeTable returned error: %v", err)
+	}
 	out := buf.String()
 
 	for _, want := range []string{"AUTH", "profile-active dev", "ACCOUNT", "123456789012", "NAME", "INSTANCE ID", "api", "i-1", "online", "10.0.0.1", "eu-central-1"} {
@@ -100,7 +102,7 @@ func TestWriteTableRendersHumanColumns(t *testing.T) {
 }
 
 func TestListCommandInvalidFilterReturnsUsageBeforeAWSConfig(t *testing.T) {
-	cmd := newRootCommand(&globalOptions{})
+	cmd := newRootCommand(&globalOptions{}, BuildInfo{})
 	cmd.SetArgs([]string{"list", "--ssm", "ready"})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -124,7 +126,7 @@ func TestListCommandInvalidFilterReturnsUsageBeforeAWSConfig(t *testing.T) {
 }
 
 func TestTunnelCommandInvalidPortReturnsUsageBeforeDependencies(t *testing.T) {
-	cmd := newRootCommand(&globalOptions{})
+	cmd := newRootCommand(&globalOptions{}, BuildInfo{})
 	cmd.SetArgs([]string{"tunnel", "i-123", "--local-port", "70000", "--remote-port", "5432"})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

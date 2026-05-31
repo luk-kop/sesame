@@ -15,6 +15,10 @@ type IdentityProvider interface {
 	GetCallerIdentity(ctx context.Context) (domain.Identity, error)
 }
 
+type RegionProvider interface {
+	ListRegions(ctx context.Context) ([]string, error)
+}
+
 type SessionStarter interface {
 	CheckDependencies() error
 	StartShell(ctx context.Context, target domain.Instance) error

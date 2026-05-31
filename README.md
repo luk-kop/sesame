@@ -17,13 +17,34 @@ A TUI for working with EC2 instances through AWS Systems Manager Session Manager
 Highlights:
 
 - **Inventory view** — lists EC2 instances correlated with `ssm:DescribeInstanceInformation`, so the SSM agent status (`online`, `connection-lost`, `not-managed`, `unknown`) is visible up front.
-- **Interactive search & filters** — local, case-insensitive search across name, ID, IPs, tags, EC2 state and SSM status; explicit filters for region, state and SSM status.
+- **Interactive search & filters** — local, case-insensitive search across name, ID, IPs, tags, EC2 state and SSM status; CLI filters for name, state and SSM status; runtime region switching in the TUI.
 - **Shell sessions** — `Enter` (or `sesame shell <instance-id>`) hands the terminal over to `aws ssm start-session` and returns to the TUI when the session ends.
 - **Port forwarding** — open local/remote port tunnels from a modal, manage their lifecycle in a dedicated view, and get prompted before quitting with active tunnels.
 - **Auth-aware** — distinguishes `env-active` (credentials from environment variables) from `profile-active` (AWS profile), keeps SDK and AWS CLI on the same identity, and always resolves the region explicitly.
 - **CLI for scripts** — `sesame list` with stable `--output json` (including `auth`, `region`, `account`, `arn` and `warnings`), plus consistent exit codes for usage, preflight, runtime and missing-dependency errors.
 
 See [AWS environment variables](docs/aws-environment.md) for supported auth, region and shared config file behavior.
+
+## Requirements
+
+Runtime:
+
+- AWS credentials available through environment variables, an AWS profile, or another AWS SDK-supported provider.
+- AWS region from `--region`, environment variables, profile config, or manual TUI selection.
+- `aws` CLI in `PATH` for TUI shell/tunnel sessions and `sesame shell` / `sesame tunnel`.
+- `session-manager-plugin` in `PATH` for SSM shell/tunnel sessions.
+
+Build:
+
+- Go 1.26.x.
+- `make`.
+- `golangci-lint` for local linting and pre-commit checks.
+
+AWS permissions:
+
+- Inventory permissions listed below.
+- Session permissions for shell/tunnel usage.
+- Optional `ec2:DescribeRegions` for dynamic region suggestions in the TUI.
 
 ## Build
 
@@ -38,11 +59,10 @@ Run `make help` to list the available targets:
 | `update-minor` | Update dependencies to the latest minor + patch releases, then tidy. |
 | `fmt` | Format Go sources with `gofmt`. |
 | `test` | Run all tests. |
-| `build` | Build the `sesame` binary into `bin/`. |
+| `build` | Build the `sesame` binary with version metadata into `bin/`. |
+| `build-release` | Build Linux release archives and checksums into `bin/`. |
 | `run` | Run the CLI help. |
 | `clean` | Remove build artifacts (`bin/` and the local build cache). |
-
-### Release Artifacts
 
 ## Usage
 
@@ -50,6 +70,12 @@ Start the TUI:
 
 ```sh
 sesame --profile dev --region eu-central-1
+```
+
+Print build metadata:
+
+```sh
+sesame --version
 ```
 
 List instances from the active region:
@@ -72,6 +98,8 @@ sesame tunnel i-0123456789abcdef0 --local-port 15432 --remote-port 5432 --profil
 ```
 
 `sesame list` uses the AWS SDK only. The TUI, `shell`, and `tunnel` require both `aws` and `session-manager-plugin` in `PATH` because sessions are started through `aws ssm start-session`.
+
+In the TUI, `g` opens the region picker. The input is always editable, and SeSaMe lazily loads available regions with `ec2:DescribeRegions` for the current profile/region. If region loading fails, manual input still works.
 
 ## Exit Codes
 
@@ -106,6 +134,24 @@ Minimal inventory permissions:
       "Sid": "SesameIdentity",
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Dynamic region suggestions in the TUI require one extra permission. This is not required for `sesame list`, inventory loading, shell sessions, or tunnels when a region is already provided by `--region`, env vars, profile config, or manual TUI input.
+
+TUI region suggestions permission:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SesameRegionPicker",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeRegions",
       "Resource": "*"
     }
   ]
@@ -152,6 +198,7 @@ For a stricter policy, replace the wildcard instance resource with specific acco
 Common `AccessDenied` causes:
 
 - `ec2:DescribeInstances` denied: inventory cannot load and `list` fails.
+- `ec2:DescribeRegions` denied: dynamic region suggestions cannot load, but manual region input still works.
 - `ssm:DescribeInstanceInformation` denied: inventory can still show EC2 instances, but SSM status becomes `unknown`/`error` with a warning.
 - `sts:GetCallerIdentity` denied or invalid credentials: startup and CLI commands fail before inventory or sessions.
 - `ssm:StartSession` denied: preflight can pass, but shell or tunnel startup fails in AWS CLI.

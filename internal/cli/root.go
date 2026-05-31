@@ -21,25 +21,32 @@ type globalOptions struct {
 	Region  string
 }
 
-func Execute() int {
+type BuildInfo struct {
+	Version   string
+	Revision  string
+	BuildDate string
+}
+
+func Execute(build BuildInfo) int {
 	opts := &globalOptions{}
-	root := newRootCommand(opts)
+	root := newRootCommand(opts, build)
 	if err := root.Execute(); err != nil {
 		var exitErr *app.ExitError
 		if errors.As(err, &exitErr) {
-			fmt.Fprintln(os.Stderr, exitErr.Error())
+			fmt.Fprintln(os.Stderr, formatCLIError(exitErr))
 			return exitErr.Code
 		}
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, formatCLIError(err))
 		return app.ExitRuntimeError
 	}
 	return app.ExitOK
 }
 
-func newRootCommand(opts *globalOptions) *cobra.Command {
+func newRootCommand(opts *globalOptions, build BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "sesame",
 		Short:         "TUI and CLI for AWS SSM Session Manager",
+		Version:       formatBuildInfo(build),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -56,17 +63,18 @@ func newRootCommand(opts *globalOptions) *cobra.Command {
 				SSM:    clients.SSM,
 			}
 			identity := awsclient.IdentityProvider{Client: clients.STS}
-			factory := func(ctx context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
-				clients, inventory, identity, err := buildProviders(ctx, &globalOptions{
+			regions := awsclient.RegionProvider{EC2: clients.EC2}
+			factory := func(ctx context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+				clients, inventory, identity, regions, err := buildProviders(ctx, &globalOptions{
 					Profile: auth.Profile,
 					Region:  auth.Region,
 				})
 				if err != nil {
-					return domain.AuthContext{}, nil, nil, err
+					return domain.AuthContext{}, nil, nil, nil, err
 				}
-				return clients.Auth, inventory, identity, nil
+				return clients.Auth, inventory, identity, regions, nil
 			}
-			program := tea.NewProgram(tui.NewModelWithProviderFactory(clients.Auth, inventory, identity, health.CheckSessionDependencies(), factory, awsclient.ListSharedProfiles()))
+			program := tea.NewProgram(tui.NewModelWithProviderFactoryAndVersion(clients.Auth, inventory, identity, regions, health.CheckSessionDependencies(), factory, awsclient.ListSharedProfiles(), formatBuildInfo(build)))
 			_, err = program.Run()
 			if err != nil {
 				return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
@@ -74,6 +82,7 @@ func newRootCommand(opts *globalOptions) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.SetVersionTemplate("{{.Version}}\n")
 
 	cmd.PersistentFlags().StringVar(&opts.Profile, "profile", "", "AWS profile to use when env credentials are not active")
 	cmd.PersistentFlags().StringVar(&opts.Region, "region", "", "AWS region")
@@ -85,13 +94,24 @@ func newRootCommand(opts *globalOptions) *cobra.Command {
 	return cmd
 }
 
-func buildProviders(ctx context.Context, opts *globalOptions) (*awsclient.Clients, awsclient.InventoryProvider, awsclient.IdentityProvider, error) {
+func formatBuildInfo(build BuildInfo) string {
+	return fmt.Sprintf("%s revision=%s build_date=%s", defaultText(build.Version, "dev"), defaultText(build.Revision, "unknown"), defaultText(build.BuildDate, "unknown"))
+}
+
+func defaultText(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func buildProviders(ctx context.Context, opts *globalOptions) (*awsclient.Clients, awsclient.InventoryProvider, awsclient.IdentityProvider, awsclient.RegionProvider, error) {
 	clients, err := awsclient.NewClients(ctx, awsclient.ConfigInput{
 		Profile: opts.Profile,
 		Region:  opts.Region,
 	})
 	if err != nil {
-		return nil, awsclient.InventoryProvider{}, awsclient.IdentityProvider{}, err
+		return nil, awsclient.InventoryProvider{}, awsclient.IdentityProvider{}, awsclient.RegionProvider{}, err
 	}
 	inventory := awsclient.InventoryProvider{
 		Region: clients.Auth.Region,
@@ -99,5 +119,6 @@ func buildProviders(ctx context.Context, opts *globalOptions) (*awsclient.Client
 		SSM:    clients.SSM,
 	}
 	identity := awsclient.IdentityProvider{Client: clients.STS}
-	return clients, inventory, identity, nil
+	regions := awsclient.RegionProvider{EC2: clients.EC2}
+	return clients, inventory, identity, regions, nil
 }

@@ -40,6 +40,17 @@ func (f fakeIdentity) GetCallerIdentity(context.Context) (domain.Identity, error
 	return f.identity, f.err
 }
 
+type fakeRegionProvider struct {
+	regions []string
+	err     error
+	calls   int
+}
+
+func (f *fakeRegionProvider) ListRegions(context.Context) ([]string, error) {
+	f.calls++
+	return append([]string(nil), f.regions...), f.err
+}
+
 func TestViewRendersInventoryAndIdentityContext(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
@@ -417,14 +428,15 @@ func TestProfileSwitchReloadsInventoryFromErrorView(t *testing.T) {
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
 			factoryCalls++
 			if auth.Profile != "dev" {
 				t.Fatalf("expected requested profile dev, got %q", auth.Profile)
 			}
 			auth.Region = "eu-west-1"
-			return auth, fakeInventory{instance: target}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+			return auth, fakeInventory{instance: target}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil, nil
 		},
 		[]string{"default", "dev", "prod"},
 	)
@@ -482,10 +494,11 @@ func TestProfileSwitchIgnoredForEnvActive(t *testing.T) {
 		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-west-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
 			t.Fatal("factory should not be called for env-active")
-			return domain.AuthContext{}, nil, nil, nil
+			return domain.AuthContext{}, nil, nil, nil, nil
 		},
 		[]string{"default", "dev"},
 	)
@@ -507,10 +520,11 @@ func TestProfileSwitchBlockedWithActiveTunnel(t *testing.T) {
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
 			t.Fatal("factory should not be called while tunnels are active")
-			return domain.AuthContext{}, nil, nil, nil
+			return domain.AuthContext{}, nil, nil, nil, nil
 		},
 		[]string{"dev", "prod"},
 	)
@@ -520,7 +534,9 @@ func TestProfileSwitchBlockedWithActiveTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
-	defer model.tunnelManager.Stop(tunnel.ID)
+	defer func() {
+		_ = model.tunnelManager.Stop(tunnel.ID)
+	}()
 
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	model = updated.(Model)
@@ -537,9 +553,10 @@ func TestProfileSwitchInventoryErrorKeepsNewAuthContext(t *testing.T) {
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
-			return auth, fakeInventory{err: errors.New("inventory denied")}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			return auth, fakeInventory{err: errors.New("inventory denied")}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil, nil
 		},
 		[]string{"default", "dev"},
 	)
@@ -564,13 +581,15 @@ func TestProfileSwitchInventoryErrorKeepsNewAuthContext(t *testing.T) {
 
 func TestRegionSwitchReloadsInventoryFromErrorView(t *testing.T) {
 	target := domain.Instance{ID: "i-456", Name: "worker", State: "running", Region: "eu-west-2", SSMStatus: domain.SSMStatusOnline}
+	regionProvider := &fakeRegionProvider{regions: []string{"eu-west-2", "eu-west-1"}}
 	factoryCalls := 0
 	model := NewModelWithProviderFactory(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
 		nil,
 		nil,
+		regionProvider,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
 			factoryCalls++
 			if auth.Profile != "dev" {
 				t.Fatalf("expected profile dev, got %q", auth.Profile)
@@ -578,7 +597,7 @@ func TestRegionSwitchReloadsInventoryFromErrorView(t *testing.T) {
 			if auth.Region != "eu-west-2" {
 				t.Fatalf("expected requested region eu-west-2, got %q", auth.Region)
 			}
-			return auth, fakeInventory{instance: target}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+			return auth, fakeInventory{instance: target}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, regionProvider, nil
 		},
 		[]string{"dev"},
 	)
@@ -587,12 +606,14 @@ func TestRegionSwitchReloadsInventoryFromErrorView(t *testing.T) {
 
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 	model = updated.(Model)
-	if cmd != nil {
-		t.Fatal("expected region modal to open without command")
+	if cmd == nil {
+		t.Fatal("expected dynamic region load command")
 	}
 	if !model.regionModal || model.regionInput != "eu-west-1" {
 		t.Fatalf("expected region modal with current region, got modal=%v input=%q", model.regionModal, model.regionInput)
 	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
 	if !strings.Contains(model.View(), "> eu-west-1") || !strings.Contains(model.View(), "  eu-west-2") {
 		t.Fatalf("expected region picker list, got:\n%s", model.View())
 	}
@@ -631,14 +652,234 @@ func TestRegionSwitchReloadsInventoryFromErrorView(t *testing.T) {
 	}
 }
 
+func TestRegionModalLoadsRegionsLazilyAndCachesSuccess(t *testing.T) {
+	regions := &fakeRegionProvider{regions: []string{"eu-west-2", "eu-central-1"}}
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		regions,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			t.Fatal("factory should not be called when opening region modal")
+			return domain.AuthContext{}, nil, nil, nil, nil
+		},
+		[]string{"dev"},
+	)
+	model.loading = false
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected async region load command")
+	}
+	if !model.regionModal || !model.regionLoading {
+		t.Fatalf("expected loading region modal, modal=%v loading=%v", model.regionModal, model.regionLoading)
+	}
+	if !strings.Contains(model.View(), "regions: loading") {
+		t.Fatalf("expected loading message, got:\n%s", model.View())
+	}
+
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if regions.calls != 1 {
+		t.Fatalf("expected one region provider call, got %d", regions.calls)
+	}
+	if model.regionLoading || model.regionLoadError != "" {
+		t.Fatalf("expected loaded regions without error, loading=%v err=%q", model.regionLoading, model.regionLoadError)
+	}
+	view := model.View()
+	if !strings.Contains(view, "> eu-central-1") || !strings.Contains(view, "  eu-west-2") {
+		t.Fatalf("expected sorted loaded region list, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected cached regions to avoid another load command")
+	}
+	if regions.calls != 1 {
+		t.Fatalf("expected cached regions to keep one provider call, got %d", regions.calls)
+	}
+}
+
+func TestRegionModalDoesNotCacheErrorsAndShowsHealthDiagnostic(t *testing.T) {
+	regions := &fakeRegionProvider{err: errors.New("AccessDenied: ec2:DescribeRegions")}
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		regions,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			t.Fatal("factory should not be called when opening region modal")
+			return domain.AuthContext{}, nil, nil, nil, nil
+		},
+		[]string{"dev"},
+	)
+	model.loading = false
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected region load command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if regions.calls != 1 {
+		t.Fatalf("expected one failed load, got %d", regions.calls)
+	}
+	view := model.View()
+	for _, want := range []string{"regions unavailable:", "ec2:DescribeRegions denied", "ask for permission", "type a region manually"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected region error view to contain %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "↑↓ select") {
+		t.Fatalf("expected no select hint when region list failed, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	model = updated.(Model)
+	healthView := model.View()
+	if !strings.Contains(healthView, "! regions:") || !strings.Contains(healthView, "ec2:DescribeRegions denied") {
+		t.Fatalf("expected health view region diagnostic, got:\n%s", healthView)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected failed region load not to be cached")
+	}
+}
+
+func TestRegionModalCredentialErrorIsConcise(t *testing.T) {
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-west-1"},
+		nil,
+		nil,
+		&fakeRegionProvider{err: errors.New("get caller identity: operation error STS: GetCallerIdentity, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found")},
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			t.Fatal("factory should not be called when loading region suggestions")
+			return domain.AuthContext{}, nil, nil, nil, nil
+		},
+		[]string{"default"},
+	)
+	model.loading = false
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected region load command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+
+	view := model.View()
+	if !strings.Contains(view, "regions unavailable: AWS credentials unavailable; fix credentials or type a region manually") {
+		t.Fatalf("expected concise region credential error, got:\n%s", view)
+	}
+	for _, notWant := range []string{"No EC2 IMDS role found. Check credentials", "choose another pr", "failed to refresh cached credentials"} {
+		if strings.Contains(view, notWant) {
+			t.Fatalf("expected region modal to avoid verbose raw credential text %q, got:\n%s", notWant, view)
+		}
+	}
+}
+
+func TestRegionLoadDoesNotOverwriteDirtyManualInput(t *testing.T) {
+	regions := &fakeRegionProvider{regions: []string{"eu-west-1", "eu-west-2"}}
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		regions,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			t.Fatal("factory should not be called when loading regions")
+			return domain.AuthContext{}, nil, nil, nil, nil
+		},
+		[]string{"dev"},
+	)
+	model.loading = false
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected region load command")
+	}
+	model.regionInput = ""
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("us-gov-west-1")})
+	model = updated.(Model)
+	if !model.regionInputDirty {
+		t.Fatal("expected manual input to mark region input dirty")
+	}
+
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+	if model.regionInput != "us-gov-west-1" {
+		t.Fatalf("expected loaded regions not to overwrite manual input, got %q", model.regionInput)
+	}
+}
+
+func TestStaleRegionLoadDoesNotOverwriteCurrentModalState(t *testing.T) {
+	model := NewModelWithProviderFactory(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		&fakeRegionProvider{regions: []string{"eu-central-1"}},
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+		nil,
+		[]string{"dev"},
+	)
+	model.loading = false
+	model.regionModal = true
+	model.regionLoading = true
+	staleKey := regionCacheKey{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"}
+
+	updated, _ := model.Update(regionsLoadedMsg{
+		key:     staleKey,
+		regions: []string{"eu-west-1", "eu-west-2"},
+		err:     errors.New("stale denied"),
+	})
+	model = updated.(Model)
+	if !model.regionLoading || model.regionLoadError != "" {
+		t.Fatalf("expected stale error not to alter current load state, loading=%v err=%q", model.regionLoading, model.regionLoadError)
+	}
+	if _, ok := model.regionCache[staleKey]; ok {
+		t.Fatal("expected stale error not to be cached")
+	}
+
+	updated, _ = model.Update(regionsLoadedMsg{
+		key:     staleKey,
+		regions: []string{"eu-west-1", "eu-west-2"},
+	})
+	model = updated.(Model)
+	if !model.regionLoading || model.regionLoadError != "" {
+		t.Fatalf("expected stale success not to alter current load state, loading=%v err=%q", model.regionLoading, model.regionLoadError)
+	}
+	if cached := model.regionCache[staleKey]; len(cached) != 2 || cached[0] != "eu-west-1" || cached[1] != "eu-west-2" {
+		t.Fatalf("expected stale success to populate cache only, got %#v", cached)
+	}
+}
+
 func TestRegionSwitchInventoryErrorKeepsNewAuthContext(t *testing.T) {
 	model := NewModelWithProviderFactory(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
-			return auth, fakeInventory{err: errors.New("region denied")}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			return auth, fakeInventory{err: errors.New("region denied")}, fakeIdentity{identity: domain.Identity{Account: "123", ARN: "arn"}}, nil, nil
 		},
 		[]string{"dev"},
 	)
@@ -666,9 +907,10 @@ func TestRegionSwitchCredentialErrorDoesNotLeakRawSDKErrorIntoStatus(t *testing.
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "default", Region: "eu-central-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
-			return auth, fakeInventory{err: errors.New("get caller identity: operation error STS: GetCallerIdentity, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found")}, fakeIdentity{}, nil
+		func(_ context.Context, auth domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
+			return auth, fakeInventory{err: errors.New("get caller identity: operation error STS: GetCallerIdentity, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found")}, fakeIdentity{}, nil, nil
 		},
 		[]string{"default"},
 	)
@@ -696,10 +938,11 @@ func TestRegionSwitchBlockedWithActiveTunnel(t *testing.T) {
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-west-1"},
 		nil,
 		nil,
+		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
-		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error) {
+		func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error) {
 			t.Fatal("factory should not be called while tunnels are active")
-			return domain.AuthContext{}, nil, nil, nil
+			return domain.AuthContext{}, nil, nil, nil, nil
 		},
 		[]string{"dev"},
 	)
@@ -709,7 +952,9 @@ func TestRegionSwitchBlockedWithActiveTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
-	defer model.tunnelManager.Stop(tunnel.ID)
+	defer func() {
+		_ = model.tunnelManager.Stop(tunnel.ID)
+	}()
 
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 	model = updated.(Model)
@@ -746,6 +991,7 @@ func TestHealthViewRendersChecklist(t *testing.T) {
 	view := model.View()
 	for _, want := range []string{
 		"Health",
+		"ok app version: dev revision=unknown build_date=unknown",
 		"ok aws CLI",
 		"x session-manager-plugin",
 		"ok auth mode: profile-active dev",
@@ -1170,7 +1416,7 @@ func TestHelpOverlayOpensAndCloses(t *testing.T) {
 		t.Fatal("expected help to be open")
 	}
 	view := model.View()
-	for _, want := range []string{"Help", "Global", "Instances", "d / Tab", "Port forwarding modal", "Tunnels", "Close help"} {
+	for _, want := range []string{"Help", "Version dev revision=unknown build_date=unknown", "Global", "Instances", "d / Tab", "Profile Picker", "Region Picker", "Port Forwarding", "Tunnels", "Close with"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected help to contain %q, got:\n%s", want, view)
 		}

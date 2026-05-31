@@ -42,7 +42,7 @@ func newListCommand(global *globalOptions) *cobra.Command {
 				return &app.ExitError{Code: app.ExitUsageError, Err: err}
 			}
 
-			clients, inventory, identity, err := buildProviders(cmd.Context(), global)
+			clients, inventory, identity, _, err := buildProviders(cmd.Context(), global)
 			if err != nil {
 				return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
 			}
@@ -54,7 +54,9 @@ func newListCommand(global *globalOptions) *cobra.Command {
 			if opts.Output == "json" {
 				return writeJSON(os.Stdout, result)
 			}
-			writeTable(os.Stdout, result)
+			if err := writeTable(os.Stdout, result); err != nil {
+				return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
+			}
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(os.Stderr, "warning: %s: %s\n", warning.Code, warning.Message)
 			}
@@ -76,19 +78,29 @@ func writeJSON(w io.Writer, result domain.ListResult) error {
 	return enc.Encode(result)
 }
 
-func writeTable(w io.Writer, result domain.ListResult) {
+func writeTable(w io.Writer, result domain.ListResult) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	auth := string(result.Auth.Mode)
 	if result.Auth.Mode == domain.AuthModeProfileActive && result.Auth.Profile != "" {
 		auth = fmt.Sprintf("%s %s", result.Auth.Mode, result.Auth.Profile)
 	}
-	fmt.Fprintf(tw, "AUTH\t%s\n", auth)
-	fmt.Fprintf(tw, "REGION\t%s\n", empty(result.Region))
-	fmt.Fprintf(tw, "ACCOUNT\t%s\n", empty(result.Account))
-	fmt.Fprintf(tw, "ARN\t%s\n\n", empty(result.ARN))
-	fmt.Fprintf(tw, "NAME\tINSTANCE ID\tSTATE\tSSM\tPRIVATE IP\tPUBLIC IP\tREGION\n")
+	if _, err := fmt.Fprintf(tw, "AUTH\t%s\n", auth); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(tw, "REGION\t%s\n", empty(result.Region)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(tw, "ACCOUNT\t%s\n", empty(result.Account)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(tw, "ARN\t%s\n\n", empty(result.ARN)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(tw, "NAME\tINSTANCE ID\tSTATE\tSSM\tPRIVATE IP\tPUBLIC IP\tREGION\n"); err != nil {
+		return err
+	}
 	for _, inst := range result.Instances {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			empty(inst.Name),
 			inst.ID,
 			inst.State,
@@ -96,9 +108,11 @@ func writeTable(w io.Writer, result domain.ListResult) {
 			empty(inst.PrivateIP),
 			empty(inst.PublicIP),
 			inst.Region,
-		)
+		); err != nil {
+			return err
+		}
 	}
-	_ = tw.Flush()
+	return tw.Flush()
 }
 
 func empty(value string) string {

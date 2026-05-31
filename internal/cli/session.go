@@ -36,7 +36,7 @@ func newShellCommand(global *globalOptions) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSessionCommand(cmd, global, args[0], opts.Force, func(ctx context.Context, starter session.AwsCliStarter, targetID string) error {
-				clients, inventory, identity, err := buildProviders(ctx, global)
+				clients, inventory, identity, _, err := buildProviders(ctx, global)
 				if err != nil {
 					return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
 				}
@@ -75,7 +75,7 @@ func newTunnelCommand(global *globalOptions) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSessionCommand(cmd, global, args[0], opts.Force, func(ctx context.Context, starter session.AwsCliStarter, targetID string) error {
-				clients, inventory, identity, err := buildProviders(ctx, global)
+				clients, inventory, identity, _, err := buildProviders(ctx, global)
 				if err != nil {
 					return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
 				}

@@ -61,6 +61,7 @@ const detailsTagLimit = 8
 const wideDetailsMinWidth = 132
 const mediumTableMinWidth = 96
 const compactTableMinWidth = 72
+const defaultAppVersion = "dev revision=unknown build_date=unknown"
 
 type tunnelPreset struct {
 	Name       string
@@ -77,78 +78,47 @@ var tunnelPresets = []tunnelPreset{
 	{Name: "HTTPS", LocalPort: "18443", RemotePort: "443"},
 }
 
-var defaultRegionOptions = []string{
-	"us-east-1",
-	"us-east-2",
-	"us-west-1",
-	"us-west-2",
-	"af-south-1",
-	"ap-east-1",
-	"ap-east-2",
-	"ap-south-1",
-	"ap-south-2",
-	"ap-southeast-1",
-	"ap-southeast-2",
-	"ap-southeast-3",
-	"ap-southeast-4",
-	"ap-southeast-5",
-	"ap-southeast-6",
-	"ap-southeast-7",
-	"ap-northeast-1",
-	"ap-northeast-2",
-	"ap-northeast-3",
-	"ca-central-1",
-	"ca-west-1",
-	"eu-central-1",
-	"eu-central-2",
-	"eu-west-1",
-	"eu-west-2",
-	"eu-west-3",
-	"eu-south-1",
-	"eu-south-2",
-	"eu-north-1",
-	"il-central-1",
-	"me-central-1",
-	"me-south-1",
-	"mx-central-1",
-	"sa-east-1",
-}
-
 type Model struct {
-	auth            domain.AuthContext
-	inventory       app.InventoryProvider
-	identity        app.IdentityProvider
-	dependencies    health.DependencyStatus
-	factory         providerFactory
-	profileOptions  []string
-	regionOptions   []string
-	result          domain.ListResult
-	visible         []domain.Instance
-	loading         bool
-	err             error
-	width           int
-	selected        int
-	status          string
-	view            activeView
-	shellStarting   bool
-	searchActive    bool
-	searchQuery     string
-	tunnelManager   *session.TunnelManager
-	tunnelModal     bool
-	profileModal    bool
-	profileInput    string
-	profileSelected int
-	regionModal     bool
-	regionInput     string
-	regionSelected  int
-	detailsFocused  bool
-	tunnelField     int
-	tunnelPreset    int
-	localPort       string
-	remotePort      string
-	tunnelSelected  int
-	quitConfirm     bool
-	helpOpen        bool
+	auth             domain.AuthContext
+	inventory        app.InventoryProvider
+	identity         app.IdentityProvider
+	regionProvider   app.RegionProvider
+	dependencies     health.DependencyStatus
+	appVersion       string
+	factory          providerFactory
+	profileOptions   []string
+	regionOptions    []string
+	regionCache      map[regionCacheKey][]string
+	result           domain.ListResult
+	visible          []domain.Instance
+	loading          bool
+	err              error
+	width            int
+	selected         int
+	status           string
+	view             activeView
+	shellStarting    bool
+	searchActive     bool
+	searchQuery      string
+	tunnelManager    *session.TunnelManager
+	tunnelModal      bool
+	profileModal     bool
+	profileInput     string
+	profileSelected  int
+	regionModal      bool
+	regionInput      string
+	regionSelected   int
+	regionInputDirty bool
+	regionLoading    bool
+	regionLoadError  string
+	detailsFocused   bool
+	tunnelField      int
+	tunnelPreset     int
+	localPort        string
+	remotePort       string
+	tunnelSelected   int
+	quitConfirm      bool
+	helpOpen         bool
 }
 
 type inventoryLoadedMsg struct {
@@ -172,12 +142,19 @@ type tunnelStartedMsg struct {
 
 type tunnelTickMsg struct{}
 
-type providerFactory func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, error)
+type providerFactory func(context.Context, domain.AuthContext) (domain.AuthContext, app.InventoryProvider, app.IdentityProvider, app.RegionProvider, error)
+
+type regionCacheKey struct {
+	Mode    domain.AuthMode
+	Profile string
+	Region  string
+}
 
 type profileChangedMsg struct {
 	auth      domain.AuthContext
 	inventory app.InventoryProvider
 	identity  app.IdentityProvider
+	regions   app.RegionProvider
 	result    domain.ListResult
 	err       error
 }
@@ -186,23 +163,37 @@ type regionChangedMsg struct {
 	auth      domain.AuthContext
 	inventory app.InventoryProvider
 	identity  app.IdentityProvider
+	regions   app.RegionProvider
 	result    domain.ListResult
 	err       error
 }
 
-func NewModel(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, dependencies health.DependencyStatus) Model {
-	return NewModelWithProviderFactory(auth, inventory, identity, dependencies, nil, nil)
+type regionsLoadedMsg struct {
+	key     regionCacheKey
+	regions []string
+	err     error
 }
 
-func NewModelWithProviderFactory(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, dependencies health.DependencyStatus, factory providerFactory, profiles []string) Model {
+func NewModel(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, dependencies health.DependencyStatus) Model {
+	return NewModelWithProviderFactory(auth, inventory, identity, nil, dependencies, nil, nil)
+}
+
+func NewModelWithProviderFactory(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, regions app.RegionProvider, dependencies health.DependencyStatus, factory providerFactory, profiles []string) Model {
+	return NewModelWithProviderFactoryAndVersion(auth, inventory, identity, regions, dependencies, factory, profiles, defaultAppVersion)
+}
+
+func NewModelWithProviderFactoryAndVersion(auth domain.AuthContext, inventory app.InventoryProvider, identity app.IdentityProvider, regions app.RegionProvider, dependencies health.DependencyStatus, factory providerFactory, profiles []string, appVersion string) Model {
 	return Model{
 		auth:           auth,
 		inventory:      inventory,
 		identity:       identity,
+		regionProvider: regions,
 		dependencies:   dependencies,
+		appVersion:     normalizeAppVersion(appVersion),
 		factory:        factory,
 		profileOptions: normalizeProfileOptions(profiles, auth.Profile),
-		regionOptions:  normalizeRegionOptions(defaultRegionOptions, auth.Region),
+		regionOptions:  normalizeRegionOptions(nil, auth.Region),
+		regionCache:    map[regionCacheKey][]string{},
 		loading:        true,
 		tunnelManager:  session.NewTunnelManager(auth, nil),
 		localPort:      "10022",
@@ -354,6 +345,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.auth = msg.auth
 				m.inventory = msg.inventory
 				m.identity = msg.identity
+				m.regionProvider = msg.regions
 				m.tunnelManager = session.NewTunnelManager(m.auth, nil)
 			}
 			m.status = "profile switch failed"
@@ -362,6 +354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auth = msg.auth
 		m.inventory = msg.inventory
 		m.identity = msg.identity
+		m.regionProvider = msg.regions
 		m.result = msg.result
 		m.tunnelManager = session.NewTunnelManager(m.auth, nil)
 		m.status = fmt.Sprintf("profile switched to %s", m.auth.Profile)
@@ -374,6 +367,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.auth = msg.auth
 				m.inventory = msg.inventory
 				m.identity = msg.identity
+				m.regionProvider = msg.regions
 				m.tunnelManager = session.NewTunnelManager(m.auth, nil)
 			}
 			m.status = "region switch failed"
@@ -382,10 +376,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auth = msg.auth
 		m.inventory = msg.inventory
 		m.identity = msg.identity
+		m.regionProvider = msg.regions
 		m.result = msg.result
 		m.tunnelManager = session.NewTunnelManager(m.auth, nil)
 		m.status = fmt.Sprintf("region switched to %s", m.auth.Region)
 		m.applySearch("")
+	case regionsLoadedMsg:
+		if msg.key != m.regionCacheKey() {
+			if msg.err == nil {
+				m.regionCache[msg.key] = normalizeRegionOptions(msg.regions, msg.key.Region)
+			}
+			return m, nil
+		}
+		m.regionLoading = false
+		if msg.err != nil {
+			m.regionLoadError = formatRegionLoadError(msg.err, m.auth)
+			return m, nil
+		}
+		regions := normalizeRegionOptions(msg.regions, m.auth.Region)
+		m.regionCache[msg.key] = regions
+		m.regionOptions = regions
+		m.regionSelected = optionIndex(m.regionOptions, m.auth.Region)
+		if !m.regionInputDirty {
+			m.regionInput = selectedRegionInput(m.regionOptions, m.regionSelected, m.auth.Region)
+		}
+		m.regionLoadError = ""
 	}
 	return m, nil
 }
@@ -711,12 +726,12 @@ func (m Model) updateRegionModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("switching region to %s", region)
 		return m, m.switchRegionCmd(region)
 	case tea.KeyUp:
-		if m.regionSelected > 0 {
+		if len(m.regionOptions) > 0 && m.regionSelected > 0 {
 			m.regionSelected--
 			m.regionInput = m.regionOptions[m.regionSelected]
 		}
 	case tea.KeyDown:
-		if m.regionSelected < len(m.regionOptions)-1 {
+		if len(m.regionOptions) > 0 && m.regionSelected < len(m.regionOptions)-1 {
 			m.regionSelected++
 			m.regionInput = m.regionOptions[m.regionSelected]
 		}
@@ -725,8 +740,10 @@ func (m Model) updateRegionModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			runes := []rune(m.regionInput)
 			m.regionInput = string(runes[:len(runes)-1])
 		}
+		m.regionInputDirty = true
 	case tea.KeyRunes:
 		m.regionInput += string(msg.Runes)
+		m.regionInputDirty = true
 	}
 	return m, nil
 }
@@ -741,9 +758,28 @@ func (m Model) openRegionModal() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.regionInput = m.auth.Region
-	m.regionSelected = optionIndex(m.regionOptions, m.auth.Region)
+	m.regionInputDirty = false
+	m.regionLoadError = ""
+	key := m.regionCacheKey()
+	if cached, ok := m.regionCache[key]; ok {
+		m.regionOptions = cached
+		m.regionSelected = optionIndex(m.regionOptions, m.auth.Region)
+		m.regionLoading = false
+	} else {
+		m.regionOptions = normalizeRegionOptions(nil, m.auth.Region)
+		m.regionSelected = optionIndex(m.regionOptions, m.auth.Region)
+		if m.regionProvider == nil {
+			m.regionLoading = false
+			m.regionLoadError = "dynamic region provider is not configured; type a region manually"
+		} else {
+			m.regionLoading = true
+		}
+	}
 	m.regionModal = true
 	m.status = ""
+	if m.regionLoading {
+		return m, m.loadRegionsCmd(key)
+	}
 	return m, nil
 }
 
@@ -789,7 +825,7 @@ func (m Model) switchProfileCmd(profile string) tea.Cmd {
 		if m.factory == nil {
 			return profileChangedMsg{err: errors.New("profile switch unavailable")}
 		}
-		auth, inventory, identity, err := m.factory(context.Background(), domain.AuthContext{
+		auth, inventory, identity, regions, err := m.factory(context.Background(), domain.AuthContext{
 			Mode:    domain.AuthModeProfileActive,
 			Profile: profile,
 			Region:  m.auth.Region,
@@ -802,6 +838,7 @@ func (m Model) switchProfileCmd(profile string) tea.Cmd {
 			auth:      auth,
 			inventory: inventory,
 			identity:  identity,
+			regions:   regions,
 			result:    result,
 			err:       err,
 		}
@@ -813,7 +850,7 @@ func (m Model) switchRegionCmd(region string) tea.Cmd {
 		if m.factory == nil {
 			return regionChangedMsg{err: errors.New("region switch unavailable")}
 		}
-		auth, inventory, identity, err := m.factory(context.Background(), domain.AuthContext{
+		auth, inventory, identity, regions, err := m.factory(context.Background(), domain.AuthContext{
 			Mode:    m.auth.Mode,
 			Profile: m.auth.Profile,
 			Region:  region,
@@ -826,9 +863,20 @@ func (m Model) switchRegionCmd(region string) tea.Cmd {
 			auth:      auth,
 			inventory: inventory,
 			identity:  identity,
+			regions:   regions,
 			result:    result,
 			err:       err,
 		}
+	}
+}
+
+func (m Model) loadRegionsCmd(key regionCacheKey) tea.Cmd {
+	return func() tea.Msg {
+		if m.regionProvider == nil {
+			return regionsLoadedMsg{key: key, err: errors.New("dynamic region provider is not configured")}
+		}
+		regions, err := m.regionProvider.ListRegions(context.Background())
+		return regionsLoadedMsg{key: key, regions: regions, err: err}
 	}
 }
 
@@ -1017,8 +1065,23 @@ func (m Model) renderProfileModal() string {
 func (m Model) renderRegionModal() string {
 	var b strings.Builder
 	b.WriteString("Region\n")
-	b.WriteString(renderOptionList(m.regionOptions, m.regionSelected))
-	fmt.Fprintf(&b, "\nregion: %s\n↑↓ select  type edit  Enter switch  Esc cancel\n", m.regionInput)
+	fmt.Fprintf(&b, "current: %s\n", emptyText(m.auth.Region))
+	if m.regionLoading {
+		b.WriteString("regions: loading...\n")
+	}
+	if m.regionLoadError != "" {
+		fmt.Fprintf(&b, "regions unavailable: %s\n", m.regionLoadError)
+		b.WriteString("type a region manually\n")
+	}
+	if len(m.regionOptions) > 0 && m.regionLoadError == "" {
+		b.WriteString("\n")
+		b.WriteString(renderOptionList(m.regionOptions, m.regionSelected))
+	}
+	help := "type edit  Enter switch  Esc cancel"
+	if len(m.regionOptions) > 0 && m.regionLoadError == "" {
+		help = "↑↓ select  type edit  Enter switch  Esc cancel"
+	}
+	fmt.Fprintf(&b, "\nregion: %s\n%s\n", m.regionInput, help)
 	return b.String()
 }
 
@@ -1027,53 +1090,83 @@ func (m Model) renderQuitConfirm() string {
 }
 
 func (m Model) renderHelp() string {
-	return strings.Join([]string{
-		"Help",
-		"",
-		"Global",
-		"  q / Ctrl+C  quit",
-		"  ?           toggle this help",
-		"",
-		"Instances",
-		"  up/down or k/j  move selection",
-		"  /               search",
-		"  r               refresh inventory",
-		"  Enter           start shell session",
-		"  f               open port forwarding modal",
-		"  d / Tab         toggle details on narrow terminals",
-		"  t               show tunnels",
-		"  h               show health",
-		"  p               choose AWS profile",
-		"  g               choose AWS region",
-		"",
-		"Search",
-		"  type            filter visible instances",
-		"  Esc             clear query, then close search",
-		"  Enter           start shell for selected result",
-		"",
-		"Port forwarding modal",
-		"  Tab             switch field",
-		"  s               cycle port preset",
-		"  Enter           start tunnel",
-		"  Esc             cancel",
-		"",
-		"Tunnels",
-		"  up/down or k/j  move selection",
-		"  x               stop selected tunnel",
-		"  c               clear finished tunnels",
-		"  Esc             return to instances",
-		"",
-		"Health",
-		"  h               show health checklist",
-		"  Esc             return to instances",
-		"",
-		"Close help with ?, Esc, Enter, or q.",
-	}, "\n") + "\n"
+	sections := []string{
+		renderHelpSection("Global", [][2]string{
+			{"q / Ctrl+C", "quit"},
+			{"?", "toggle this help"},
+		}),
+		renderHelpSection("Instances", [][2]string{
+			{"up/down or k/j", "move selection"},
+			{"/", "search"},
+			{"r", "refresh inventory"},
+			{"Enter", "start shell session"},
+			{"f", "open port forwarding modal"},
+			{"d / Tab", "toggle details on narrow terminals"},
+			{"t", "show tunnels"},
+			{"h", "show health"},
+			{"p", "choose AWS profile"},
+			{"g", "choose AWS region"},
+		}),
+		renderHelpSection("Search", [][2]string{
+			{"type", "filter visible instances"},
+			{"Esc", "clear query, then close search"},
+			{"Enter", "start shell for selected result"},
+		}),
+		renderHelpSection("Profile Picker", [][2]string{
+			{"up/down or k/j", "select profile"},
+			{"type", "edit profile manually"},
+			{"Enter", "switch profile"},
+			{"Esc", "cancel"},
+		}),
+		renderHelpSection("Region Picker", [][2]string{
+			{"up/down or k/j", "select loaded region"},
+			{"type", "edit region manually"},
+			{"Enter", "switch region"},
+			{"Esc", "cancel"},
+		}),
+		renderHelpSection("Port Forwarding", [][2]string{
+			{"Tab", "switch field"},
+			{"s", "cycle port preset"},
+			{"Enter", "start tunnel"},
+			{"Esc", "cancel"},
+		}),
+		renderHelpSection("Tunnels", [][2]string{
+			{"up/down or k/j", "move selection"},
+			{"x", "stop selected tunnel"},
+			{"c", "clear finished tunnels"},
+			{"Esc", "return to instances"},
+		}),
+		renderHelpSection("Health", [][2]string{
+			{"h", "show health checklist"},
+			{"Esc", "return to instances"},
+		}),
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("Help"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s\n", subtleStyle.Render("Version "+m.appVersion))
+	b.WriteString(subtleStyle.Render("Close with ?, Esc, Enter, or q."))
+	b.WriteString("\n\n")
+	b.WriteString(strings.Join(sections, "\n"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func renderHelpSection(title string, rows [][2]string) string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render(title))
+	b.WriteString("\n")
+	for _, row := range rows {
+		fmt.Fprintf(&b, "  %-15s %s\n", valueStyle.Render(row[0]), row[1])
+	}
+	return b.String()
 }
 
 func (m Model) renderHealth() string {
 	var b strings.Builder
 	b.WriteString("Health\n")
+	fmt.Fprintf(&b, "ok app version: %s\n", m.appVersion)
 	fmt.Fprintf(&b, "%s aws CLI\n", checkMark(m.dependencies.AWSCLI))
 	fmt.Fprintf(&b, "%s session-manager-plugin\n", checkMark(m.dependencies.SessionManagerPlugin))
 	fmt.Fprintf(&b, "%s auth mode: %s\n", checkMark(m.auth.Mode != ""), m.authLabel())
@@ -1086,6 +1179,17 @@ func (m Model) renderHealth() string {
 		fmt.Fprintf(&b, "x inventory: %v\n", m.err)
 	} else {
 		fmt.Fprintf(&b, "%s inventory instances: %d\n", checkMark(true), len(m.result.Instances))
+	}
+	if m.regionProvider == nil {
+		b.WriteString("- regions: dynamic provider unavailable\n")
+	} else if m.regionLoading {
+		b.WriteString("- regions: loading\n")
+	} else if m.regionLoadError != "" {
+		fmt.Fprintf(&b, "! regions: %s\n", m.regionLoadError)
+	} else if cached, ok := m.regionCache[m.regionCacheKey()]; ok {
+		fmt.Fprintf(&b, "ok regions: %d loaded\n", len(cached))
+	} else {
+		b.WriteString("- regions: not loaded\n")
 	}
 	if len(m.result.Warnings) == 0 {
 		b.WriteString("ok warnings: none\n")
@@ -1298,11 +1402,7 @@ func (m Model) tunnels() []domain.Tunnel {
 	if m.tunnelManager == nil {
 		return nil
 	}
-	tunnels := m.tunnelManager.List()
-	if m.tunnelSelected >= len(tunnels) {
-		m.tunnelSelected = max(0, len(tunnels)-1)
-	}
-	return tunnels
+	return m.tunnelManager.List()
 }
 
 func (m Model) authLabel() string {
@@ -1344,6 +1444,13 @@ func trim(value string, width int) string {
 func emptyText(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "-"
+	}
+	return value
+}
+
+func normalizeAppVersion(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return defaultAppVersion
 	}
 	return value
 }
@@ -1420,11 +1527,55 @@ func normalizeProfileOptions(profiles []string, current string) []string {
 }
 
 func normalizeRegionOptions(regions []string, current string) []string {
-	normalized := normalizeProfileOptions(regions, current)
-	if current == "" {
-		return normalized
+	seen := map[string]struct{}{}
+	var normalized []string
+	for _, region := range regions {
+		region = strings.TrimSpace(region)
+		if region == "" {
+			continue
+		}
+		if _, ok := seen[region]; ok {
+			continue
+		}
+		seen[region] = struct{}{}
+		normalized = append(normalized, region)
 	}
+	current = strings.TrimSpace(current)
+	if current != "" {
+		if _, ok := seen[current]; !ok {
+			normalized = append(normalized, current)
+		}
+	}
+	sort.Strings(normalized)
 	return normalized
+}
+
+func selectedRegionInput(options []string, selected int, fallback string) string {
+	if selected >= 0 && selected < len(options) {
+		return options[selected]
+	}
+	return fallback
+}
+
+func (m Model) regionCacheKey() regionCacheKey {
+	return regionCacheKey{
+		Mode:    m.auth.Mode,
+		Profile: m.auth.Profile,
+		Region:  m.auth.Region,
+	}
+}
+
+func formatRegionLoadError(err error, auth domain.AuthContext) string {
+	message := formatTUIError(err, auth)
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(message, "AccessDenied") || strings.Contains(lower, "denied"):
+		return "ec2:DescribeRegions denied; type a region manually or ask for permission"
+	case strings.Contains(lower, "credentials unavailable"):
+		return "AWS credentials unavailable; fix credentials or type a region manually"
+	default:
+		return trim(message, 72) + "; type a region manually"
+	}
 }
 
 func profileIndex(profiles []string, profile string) int {

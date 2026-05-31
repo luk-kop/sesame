@@ -53,7 +53,7 @@ Profile switching is disabled when:
 - active tunnels are running,
 - profile switching is unavailable in the current runtime context.
 
-Press `g` in the TUI to choose a region. The picker shows a static list of commercial AWS Regions and also allows manual input.
+Press `g` in the TUI to choose a region. The picker opens immediately with manual input enabled, then lazily loads available regions with `ec2:DescribeRegions` for the current auth/profile/region. If regions cannot be loaded, SeSaMe shows the error in the modal and health view, and manual input remains available.
 
 Region switching is disabled when:
 

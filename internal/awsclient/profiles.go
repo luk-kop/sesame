@@ -58,7 +58,9 @@ func readProfileNames(path string, configFile bool) []string {
 	if err != nil {
 		return nil
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	var profiles []string
 	scanner := bufio.NewScanner(file)

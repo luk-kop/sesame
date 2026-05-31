@@ -2,9 +2,18 @@ APP := sesame
 CMD := ./cmd/sesame
 BIN_DIR := bin
 BIN := $(BIN_DIR)/$(APP)
+RELEASE_TMP := $(BIN_DIR)/release
 GO := GOCACHE=$(CURDIR)/.cache/go-build go
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION_NO_V := $(VERSION:v%=%)
+REVISION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS := -s -w \
+	-X 'main.version=$(VERSION)' \
+	-X 'main.revision=$(REVISION)' \
+	-X 'main.buildDate=$(BUILD_DATE)'
 
-.PHONY: help tidy update-patch update-minor fmt test build run clean
+.PHONY: help tidy update-patch update-minor fmt test build build-release run clean
 
 help:
 	@printf '%s\n' 'Available targets:'
@@ -13,7 +22,8 @@ help:
 	@printf '  %-13s %s\n' 'update-minor' 'update dependencies (minor + patch)'
 	@printf '  %-13s %s\n' 'fmt' 'format Go sources'
 	@printf '  %-13s %s\n' 'test' 'run all tests'
-	@printf '  %-13s %s\n' 'build' 'build the sesame binary'
+	@printf '  %-13s %s\n' 'build' 'build the sesame binary with version metadata'
+	@printf '  %-13s %s\n' 'build-release' 'build release archives for Linux'
 	@printf '  %-13s %s\n' 'run' 'run the CLI help'
 	@printf '  %-13s %s\n' 'clean' 'remove build artifacts'
 
@@ -36,7 +46,24 @@ test:
 
 build:
 	mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN) $(CMD)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) $(CMD)
+
+build-release:
+	rm -rf $(RELEASE_TMP)
+	mkdir -p $(RELEASE_TMP)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(RELEASE_TMP)/$(APP)_linux_amd64 $(CMD)
+	mkdir -p $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_amd64
+	cp $(RELEASE_TMP)/$(APP)_linux_amd64 $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_amd64/$(APP)
+	cp README.md $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_amd64/README.md
+	cp LICENSE $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_amd64/LICENSE
+	tar -C $(RELEASE_TMP) -czf $(BIN_DIR)/$(APP)_$(VERSION_NO_V)_linux_amd64.tar.gz $(APP)_$(VERSION_NO_V)_linux_amd64
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(RELEASE_TMP)/$(APP)_linux_arm64 $(CMD)
+	mkdir -p $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64
+	cp $(RELEASE_TMP)/$(APP)_linux_arm64 $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64/$(APP)
+	cp README.md $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64/README.md
+	cp LICENSE $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64/LICENSE
+	tar -C $(RELEASE_TMP) -czf $(BIN_DIR)/$(APP)_$(VERSION_NO_V)_linux_arm64.tar.gz $(APP)_$(VERSION_NO_V)_linux_arm64
+	cd $(BIN_DIR) && sha256sum $(APP)_$(VERSION_NO_V)_linux_amd64.tar.gz $(APP)_$(VERSION_NO_V)_linux_arm64.tar.gz > checksums.txt
 
 run:
 	$(GO) run $(CMD) --help
