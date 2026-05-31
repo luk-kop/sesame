@@ -46,6 +46,67 @@ AWS permissions:
 - Session permissions for shell/tunnel usage.
 - Optional `ec2:DescribeRegions` for dynamic region suggestions in the TUI.
 
+## Install
+
+### Install From GitHub Releases
+
+This is the recommended path for workstation use. Download the latest Linux archive
+for your CPU architecture from [GitHub Releases](https://github.com/luk-kop/sesame/releases).
+
+For x86_64 / amd64:
+
+```sh
+curl -L -o sesame_linux_amd64.tar.gz \
+  https://github.com/luk-kop/sesame/releases/latest/download/sesame_linux_amd64.tar.gz
+
+tar -xzf sesame_linux_amd64.tar.gz
+mkdir -p ~/.local/bin
+install -m 0755 sesame_*/sesame ~/.local/bin/sesame
+```
+
+For arm64:
+
+```sh
+curl -L -o sesame_linux_arm64.tar.gz \
+  https://github.com/luk-kop/sesame/releases/latest/download/sesame_linux_arm64.tar.gz
+
+tar -xzf sesame_linux_arm64.tar.gz
+mkdir -p ~/.local/bin
+install -m 0755 sesame_*/sesame ~/.local/bin/sesame
+```
+
+Make sure `~/.local/bin` is in `PATH`:
+
+```sh
+echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin"
+```
+
+If it is missing, add this to your shell profile:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Verify the installation:
+
+```sh
+sesame --version
+```
+
+### Build From Source
+
+Use this when developing SeSaMe or when a release binary is not available for your
+platform:
+
+```sh
+git clone https://github.com/luk-kop/sesame.git
+cd sesame
+make build
+mkdir -p ~/.local/bin
+install -m 0755 bin/sesame ~/.local/bin/sesame
+sesame --version
+```
+
 ## Build
 
 ### Make Targets

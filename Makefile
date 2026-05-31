@@ -57,13 +57,15 @@ build-release:
 	cp README.md $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_amd64/README.md
 	cp LICENSE $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_amd64/LICENSE
 	tar -C $(RELEASE_TMP) -czf $(BIN_DIR)/$(APP)_$(VERSION_NO_V)_linux_amd64.tar.gz $(APP)_$(VERSION_NO_V)_linux_amd64
+	cp $(BIN_DIR)/$(APP)_$(VERSION_NO_V)_linux_amd64.tar.gz $(BIN_DIR)/$(APP)_linux_amd64.tar.gz
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(RELEASE_TMP)/$(APP)_linux_arm64 $(CMD)
 	mkdir -p $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64
 	cp $(RELEASE_TMP)/$(APP)_linux_arm64 $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64/$(APP)
 	cp README.md $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64/README.md
 	cp LICENSE $(RELEASE_TMP)/$(APP)_$(VERSION_NO_V)_linux_arm64/LICENSE
 	tar -C $(RELEASE_TMP) -czf $(BIN_DIR)/$(APP)_$(VERSION_NO_V)_linux_arm64.tar.gz $(APP)_$(VERSION_NO_V)_linux_arm64
-	cd $(BIN_DIR) && sha256sum $(APP)_$(VERSION_NO_V)_linux_amd64.tar.gz $(APP)_$(VERSION_NO_V)_linux_arm64.tar.gz > checksums.txt
+	cp $(BIN_DIR)/$(APP)_$(VERSION_NO_V)_linux_arm64.tar.gz $(BIN_DIR)/$(APP)_linux_arm64.tar.gz
+	cd $(BIN_DIR) && sha256sum $(APP)_$(VERSION_NO_V)_linux_amd64.tar.gz $(APP)_linux_amd64.tar.gz $(APP)_$(VERSION_NO_V)_linux_arm64.tar.gz $(APP)_linux_arm64.tar.gz > checksums.txt
 
 run:
 	$(GO) run $(CMD) --help
