@@ -50,16 +50,20 @@ AWS permissions:
 
 ### Install From GitHub Releases
 
-This is the recommended path for workstation use. Download the latest Linux archive
-for your CPU architecture from [GitHub Releases](https://github.com/luk-kop/sesame/releases).
+This is the recommended path for workstation use. Pick a release tag from
+[GitHub Releases](https://github.com/luk-kop/sesame/releases), then download the
+Linux archive for your CPU architecture.
 
 For x86_64 / amd64:
 
 ```sh
-curl -L -o sesame_linux_amd64.tar.gz \
-  https://github.com/luk-kop/sesame/releases/latest/download/sesame_linux_amd64.tar.gz
+VERSION=v0.1.0
+V="${VERSION#v}"
 
-tar -xzf sesame_linux_amd64.tar.gz
+curl -L -o "sesame_${V}_linux_amd64.tar.gz" \
+  "https://github.com/luk-kop/sesame/releases/download/${VERSION}/sesame_${V}_linux_amd64.tar.gz"
+
+tar -xzf "sesame_${V}_linux_amd64.tar.gz"
 mkdir -p ~/.local/bin
 install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 ```
@@ -67,10 +71,13 @@ install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 For arm64:
 
 ```sh
-curl -L -o sesame_linux_arm64.tar.gz \
-  https://github.com/luk-kop/sesame/releases/latest/download/sesame_linux_arm64.tar.gz
+VERSION=v0.1.0
+V="${VERSION#v}"
 
-tar -xzf sesame_linux_arm64.tar.gz
+curl -L -o "sesame_${V}_linux_arm64.tar.gz" \
+  "https://github.com/luk-kop/sesame/releases/download/${VERSION}/sesame_${V}_linux_arm64.tar.gz"
+
+tar -xzf "sesame_${V}_linux_arm64.tar.gz"
 mkdir -p ~/.local/bin
 install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 ```
