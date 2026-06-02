@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -307,6 +308,172 @@ func TestInstanceTableUsesCompactColumnsOnNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestWideModeAddsOperationalColumnsWhenTerminalIsWideEnough(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.width = 140
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "api",
+		State:     "running",
+		Type:      "t3.micro",
+		PrivateIP: "10.0.0.10",
+		PublicIP:  "18.1.2.3",
+		Region:    "eu-central-1",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	table := model.renderInstanceTable()
+	for _, notWant := range []string{"Type", "Public IP", "Region", "t3.micro", "18.1.2.3"} {
+		if strings.Contains(table, notWant) {
+			t.Fatalf("expected default table to hide %q, got:\n%s", notWant, table)
+		}
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	model = updated.(Model)
+	table = model.renderInstanceTable()
+	for _, want := range []string{"Type", "Public IP", "Region", "t3.micro", "18.1.2.3", "eu-central-1"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected wide table to contain %q, got:\n%s", want, table)
+		}
+	}
+	if !strings.Contains(model.footer(), "w default") {
+		t.Fatalf("expected footer to advertise default toggle, got %q", model.footer())
+	}
+}
+
+func TestWideModeFallsBackOnNarrowTerminal(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.width = 90
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "api",
+		State:     "running",
+		Type:      "t3.micro",
+		PrivateIP: "10.0.0.10",
+		PublicIP:  "18.1.2.3",
+		Region:    "eu-central-1",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+	model.wideMode = true
+
+	table := model.renderInstanceTable()
+	for _, notWant := range []string{"Type", "Public IP", "t3.micro", "18.1.2.3"} {
+		if strings.Contains(table, notWant) {
+			t.Fatalf("expected narrow terminal to ignore wide columns %q, got:\n%s", notWant, table)
+		}
+	}
+}
+
+func TestInstanceTableLimitsRowsToTerminalHeight(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.height = 12
+	model.visible = testInstances(20)
+
+	table := model.renderInstanceTable()
+	if strings.Contains(table, "api-05") {
+		t.Fatalf("expected table to render only visible window rows, got:\n%s", table)
+	}
+	for _, want := range []string{"Instances (1-4 of 20)", "api-00", "api-03"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected table to contain %q, got:\n%s", want, table)
+		}
+	}
+}
+
+func TestInstanceTableWindowFollowsSelection(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.height = 12
+	model.visible = testInstances(20)
+	model.selected = 10
+
+	table := model.renderInstanceTable()
+	for _, want := range []string{"Instances (9-12 of 20)", "> api-10"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected selected instance in visible window with %q, got:\n%s", want, table)
+		}
+	}
+	if strings.Contains(table, "api-00") || strings.Contains(table, "api-19") {
+		t.Fatalf("expected table to omit rows outside selected window, got:\n%s", table)
+	}
+}
+
+func TestPageDownMovesSelectionByVisibleRows(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.view = viewInstances
+	model.height = 12
+	model.visible = testInstances(20)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	model = updated.(Model)
+
+	if model.selected != 4 {
+		t.Fatalf("expected PgDown to move by visible row count, got %d", model.selected)
+	}
+}
+
+func TestSortShortcutsOrderVisibleInstancesAndToggleDirection(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.view = viewInstances
+	model.result = domain.ListResult{Instances: []domain.Instance{
+		{ID: "i-2", Name: "worker", State: "stopped", PrivateIP: "10.0.0.20", SSMStatus: domain.SSMStatusConnectionLost},
+		{ID: "i-1", Name: "api", State: "running", PrivateIP: "10.0.0.10", SSMStatus: domain.SSMStatusOnline},
+	}}
+	model.visible = append([]domain.Instance(nil), model.result.Instances...)
+	model.selected = 1
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = updated.(Model)
+	if got := []string{model.visible[0].ID, model.visible[1].ID}; got[0] != "i-1" || got[1] != "i-2" {
+		t.Fatalf("expected private IP ascending sort, got %#v", got)
+	}
+	if model.selected != 0 {
+		t.Fatalf("expected selected instance to be preserved after sort, got selected=%d", model.selected)
+	}
+	if !strings.Contains(model.View(), "Sort: private IP asc") {
+		t.Fatalf("expected sort in header, got:\n%s", model.View())
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = updated.(Model)
+	if got := []string{model.visible[0].ID, model.visible[1].ID}; got[0] != "i-2" || got[1] != "i-1" {
+		t.Fatalf("expected private IP descending sort, got %#v", got)
+	}
+	if !strings.Contains(model.View(), "Sort: private IP desc") {
+		t.Fatalf("expected descending sort in header, got:\n%s", model.View())
+	}
+}
+
 func TestDetailsLimitsRenderedTags(t *testing.T) {
 	tags := map[string]string{}
 	for _, key := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
@@ -338,6 +505,20 @@ func TestDetailsLimitsRenderedTags(t *testing.T) {
 	if strings.Contains(view, "I: i") || strings.Contains(view, "J: j") {
 		t.Fatalf("expected tags beyond limit to be hidden, got:\n%s", view)
 	}
+}
+
+func testInstances(count int) []domain.Instance {
+	instances := make([]domain.Instance, count)
+	for i := range instances {
+		instances[i] = domain.Instance{
+			ID:        fmt.Sprintf("i-%03d", i),
+			Name:      fmt.Sprintf("api-%02d", i),
+			State:     "running",
+			PrivateIP: fmt.Sprintf("10.0.0.%d", i+10),
+			SSMStatus: domain.SSMStatusOnline,
+		}
+	}
+	return instances
 }
 
 func TestViewRendersReadOnlyDependencyWarning(t *testing.T) {
@@ -1502,12 +1683,12 @@ func TestSearchFiltersVisibleInstances(t *testing.T) {
 	if len(model.visible) != 1 || model.visible[0].ID != "i-1" {
 		t.Fatalf("expected search to filter to api instance, got %#v", model.visible)
 	}
-	if !strings.Contains(model.View(), "Search: /ap") {
-		t.Fatalf("expected search query in view, got:\n%s", model.View())
+	if !strings.Contains(model.View(), "Filter /ap") {
+		t.Fatalf("expected filter bar in view, got:\n%s", model.View())
 	}
 }
 
-func TestSearchEscClearsThenCloses(t *testing.T) {
+func TestSearchEscClosesAndKeepsFilter(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
 		nil,
@@ -1530,13 +1711,38 @@ func TestSearchEscClearsThenCloses(t *testing.T) {
 
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model = updated.(Model)
-	if model.searchQuery != "" || len(model.visible) != 2 || !model.searchActive {
-		t.Fatalf("expected first Esc to clear query and keep search active, got query=%q active=%v visible=%d", model.searchQuery, model.searchActive, len(model.visible))
+	if model.searchQuery != "api" || len(model.visible) != 1 || model.searchActive {
+		t.Fatalf("expected Esc to close search and keep filter, got query=%q active=%v visible=%d", model.searchQuery, model.searchActive, len(model.visible))
 	}
+	if !strings.Contains(model.View(), "Filter: /api") {
+		t.Fatalf("expected inactive filter in header, got:\n%s", model.View())
+	}
+}
 
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+func TestSearchCtrlUClearFilter(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeEnvActive, Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	updated, _ := model.Update(inventoryLoadedMsg{result: domain.ListResult{
+		Auth:     model.auth,
+		Region:   "eu-central-1",
+		Warnings: []domain.Warning{},
+		Instances: []domain.Instance{
+			{ID: "i-1", Name: "api", State: "running", SSMStatus: domain.SSMStatusOnline},
+			{ID: "i-2", Name: "bastion", State: "running", SSMStatus: domain.SSMStatusOnline},
+		},
+	}})
 	model = updated.(Model)
-	if model.searchActive {
-		t.Fatal("expected second Esc to close search")
+	model.searchActive = true
+	model.searchQuery = "api"
+	model.applySearch("")
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	model = updated.(Model)
+	if model.searchQuery != "" || len(model.visible) != 2 || !model.searchActive {
+		t.Fatalf("expected Ctrl+U to clear filter and keep search active, got query=%q active=%v visible=%d", model.searchQuery, model.searchActive, len(model.visible))
 	}
 }

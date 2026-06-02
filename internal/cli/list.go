@@ -20,6 +20,7 @@ type listOptions struct {
 	State     string
 	SSMStatus string
 	AllStates bool
+	Limit     int
 }
 
 func newListCommand(global *globalOptions) *cobra.Command {
@@ -31,6 +32,9 @@ func newListCommand(global *globalOptions) *cobra.Command {
 			opts.Output = strings.ToLower(strings.TrimSpace(opts.Output))
 			if opts.Output != "table" && opts.Output != "json" {
 				return &app.ExitError{Code: app.ExitUsageError, Err: fmt.Errorf("unsupported output: %s", opts.Output)}
+			}
+			if opts.Limit < 0 {
+				return &app.ExitError{Code: app.ExitUsageError, Err: fmt.Errorf("limit must be greater than or equal to 0")}
 			}
 			filters, err := app.NormalizeListFilters(app.ListFilters{
 				Name:      opts.Name,
@@ -54,7 +58,7 @@ func newListCommand(global *globalOptions) *cobra.Command {
 			if opts.Output == "json" {
 				return writeJSON(os.Stdout, result)
 			}
-			if err := writeTable(os.Stdout, result); err != nil {
+			if err := writeTableWithOptions(os.Stdout, result, tableOptions{Limit: opts.Limit}); err != nil {
 				return &app.ExitError{Code: app.ExitRuntimeError, Err: err}
 			}
 			for _, warning := range result.Warnings {
@@ -69,6 +73,7 @@ func newListCommand(global *globalOptions) *cobra.Command {
 	cmd.Flags().StringVar(&opts.State, "state", "", "EC2 state filter: pending, running, shutting-down, terminated, stopping, stopped")
 	cmd.Flags().StringVar(&opts.SSMStatus, "ssm", "", "SSM status filter: online, not-managed, connection-lost, unknown, error")
 	cmd.Flags().BoolVar(&opts.AllStates, "all-states", false, "include terminated instances")
+	cmd.Flags().IntVar(&opts.Limit, "limit", 0, "maximum table rows to print; 0 prints all rows")
 	return cmd
 }
 
@@ -79,6 +84,24 @@ func writeJSON(w io.Writer, result domain.ListResult) error {
 }
 
 func writeTable(w io.Writer, result domain.ListResult) error {
+	return writeTableWithOptions(w, result, tableOptions{})
+}
+
+type tableOptions struct {
+	Limit int
+}
+
+func writeTableWithOptions(w io.Writer, result domain.ListResult, opts tableOptions) error {
+	if err := writeTableMetadata(w, result, opts); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	return writeInstanceRows(w, result, opts)
+}
+
+func writeTableMetadata(w io.Writer, result domain.ListResult, opts tableOptions) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	auth := string(result.Auth.Mode)
 	if result.Auth.Mode == domain.AuthModeProfileActive && result.Auth.Profile != "" {
@@ -93,15 +116,33 @@ func writeTable(w io.Writer, result domain.ListResult) error {
 	if _, err := fmt.Fprintf(tw, "ACCOUNT\t%s\n", empty(result.Account)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(tw, "ARN\t%s\n\n", empty(result.ARN)); err != nil {
+	if _, err := fmt.Fprintf(tw, "ARN\t%s\n", empty(result.ARN)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(tw, "NAME\tINSTANCE ID\tSTATE\tSSM\tPRIVATE IP\tPUBLIC IP\tREGION\n"); err != nil {
+	if _, err := fmt.Fprintf(tw, "INSTANCES\t%d\n", len(result.Instances)); err != nil {
 		return err
 	}
-	for _, inst := range result.Instances {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			empty(inst.Name),
+	if opts.Limit > 0 && opts.Limit < len(result.Instances) {
+		if _, err := fmt.Fprintf(tw, "SHOWN\t%d\n", opts.Limit); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func writeInstanceRows(w io.Writer, result domain.ListResult, opts tableOptions) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintf(tw, "#\tNAME\tINSTANCE ID\tSTATE\tSSM\tPRIVATE IP\tPUBLIC IP\tREGION\n"); err != nil {
+		return err
+	}
+	instances := result.Instances
+	if opts.Limit > 0 && opts.Limit < len(instances) {
+		instances = instances[:opts.Limit]
+	}
+	for i, inst := range instances {
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			i+1,
+			trimTableCell(empty(inst.Name), 40),
 			inst.ID,
 			inst.State,
 			inst.SSMStatus,
@@ -113,6 +154,16 @@ func writeTable(w io.Writer, result domain.ListResult) error {
 		}
 	}
 	return tw.Flush()
+}
+
+func trimTableCell(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
 }
 
 func empty(value string) string {
