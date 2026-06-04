@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -57,10 +58,22 @@ const (
 	viewHealth
 )
 
-const detailsTagLimit = 8
+type instanceSortKey string
+
+const (
+	sortNone       instanceSortKey = ""
+	sortName       instanceSortKey = "name"
+	sortInstanceID instanceSortKey = "instance ID"
+	sortState      instanceSortKey = "state"
+	sortSSM        instanceSortKey = "SSM"
+	sortPrivateIP  instanceSortKey = "private IP"
+)
+
 const wideDetailsMinWidth = 132
+const wideTableMinWidth = 131
 const mediumTableMinWidth = 96
 const compactTableMinWidth = 72
+const detailsTagLimit = 8
 const defaultAppVersion = "dev revision=unknown build_date=unknown"
 
 type tunnelPreset struct {
@@ -94,7 +107,11 @@ type Model struct {
 	loading          bool
 	err              error
 	width            int
+	height           int
 	selected         int
+	wideMode         bool
+	sortKey          instanceSortKey
+	sortDescending   bool
 	status           string
 	view             activeView
 	shellStarting    bool
@@ -209,6 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 	case tea.KeyMsg:
 		if m.helpOpen {
 			return m.updateHelp(msg)
@@ -272,6 +290,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.searchActive = true
 			m.status = ""
+		case "w":
+			if m.view == viewTunnels || m.view == viewHealth {
+				return m, nil
+			}
+			m.wideMode = !m.wideMode
+			if m.isWideTable() {
+				m.status = "wide table enabled"
+			} else if m.wideMode {
+				m.status = "wide table pending wider terminal"
+			} else {
+				m.status = "default table enabled"
+			}
+		case "N":
+			if m.view == viewInstances {
+				m.toggleSort(sortName)
+			}
+		case "I":
+			if m.view == viewInstances {
+				m.toggleSort(sortInstanceID)
+			}
+		case "S":
+			if m.view == viewInstances {
+				m.toggleSort(sortState)
+			}
+		case "M":
+			if m.view == viewInstances {
+				m.toggleSort(sortSSM)
+			}
+		case "P":
+			if m.view == viewInstances {
+				m.toggleSort(sortPrivateIP)
+			}
 		case "tab", "d":
 			if m.view == viewInstances && m.isNarrowLayout() {
 				m.detailsFocused = !m.detailsFocused
@@ -304,6 +354,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.view == viewInstances && m.selected < len(m.visible)-1 {
 				m.selected++
+			}
+		case "pgup":
+			if m.view == viewInstances {
+				m.selected = max(0, m.selected-m.instanceTableRowLimit())
+			}
+		case "pgdown":
+			if m.view == viewInstances && len(m.visible) > 0 {
+				m.selected = min(len(m.visible)-1, m.selected+m.instanceTableRowLimit())
+			}
+		case "home":
+			if m.view == viewInstances {
+				m.selected = 0
+			}
+		case "end":
+			if m.view == viewInstances && len(m.visible) > 0 {
+				m.selected = len(m.visible) - 1
 			}
 		}
 	case inventoryLoadedMsg:
@@ -409,6 +475,10 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
+	if m.searchActive {
+		b.WriteString(m.renderFilterBar())
+		b.WriteString("\n")
+	}
 
 	switch {
 	case m.view == viewHealth:
@@ -921,8 +991,11 @@ func (m Model) renderHeader() string {
 	if m.status != "" {
 		signals = append(signals, renderKV("Status", m.status))
 	}
-	if m.searchActive || m.searchQuery != "" {
-		signals = append(signals, renderKV("Search", "/"+m.searchQuery))
+	if m.searchQuery != "" {
+		signals = append(signals, renderKV("Filter", "/"+m.searchQuery))
+	}
+	if m.sortKey != sortNone {
+		signals = append(signals, renderKV("Sort", m.sortLabel()))
 	}
 	if m.tunnelManager != nil {
 		tunnels := m.tunnelManager.List()
@@ -936,21 +1009,38 @@ func (m Model) renderHeader() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m Model) renderFilterBar() string {
+	query := m.searchQuery
+	if query == "" {
+		query = " "
+	}
+	return footerStyle.Render("Filter /" + query)
+}
+
 func (m Model) renderInstanceTable() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", headerStyle.Render("Instances"))
+	start, end := m.instanceTableWindow()
+	title := "Instances"
+	if len(m.visible) > 0 {
+		title = fmt.Sprintf("Instances (%d-%d of %d)", start+1, end, len(m.visible))
+	}
+	fmt.Fprintf(&b, "%s\n", headerStyle.Render(title))
 	switch {
 	case m.isCompactTable():
 		fmt.Fprintf(&b, "%-2s%-16s  %-19s  %-13s\n", "", "Name", "Instance ID", "SSM")
 		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 54)))
 	case m.isMediumTable():
-		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s\n", "", "Name", "Instance ID", "State", "SSM")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 68)))
+		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-13s  %-13s\n", "", "Name", "Instance ID", "State", "SSM")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 71)))
+	case m.isWideTable():
+		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s\n", "", "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "Public IP", "Region")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", wideTableMinWidth)))
 	default:
-		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-10s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 88)))
+		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-13s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 91)))
 	}
-	for i, inst := range m.visible {
+	for i := start; i < end; i++ {
+		inst := m.visible[i]
 		cursor := " "
 		if i == m.selected {
 			cursor = ">"
@@ -965,6 +1055,42 @@ func (m Model) renderInstanceTable() string {
 	return b.String()
 }
 
+func (m Model) instanceTableWindow() (int, int) {
+	if len(m.visible) == 0 {
+		return 0, 0
+	}
+	limit := m.instanceTableRowLimit()
+	if limit >= len(m.visible) {
+		return 0, len(m.visible)
+	}
+	selected := min(max(0, m.selected), len(m.visible)-1)
+	start := selected - limit/2
+	if start < 0 {
+		start = 0
+	}
+	if start+limit > len(m.visible) {
+		start = len(m.visible) - limit
+	}
+	return start, start + limit
+}
+
+func (m Model) instanceTableRowLimit() int {
+	if m.height <= 0 {
+		return len(m.visible)
+	}
+	reservedRows := 10
+	if m.searchActive {
+		reservedRows++
+	}
+	if len(m.result.Warnings) > 0 || m.status != "" || m.searchQuery != "" || m.sortKey != sortNone || (m.tunnelManager != nil && len(m.tunnelManager.List()) > 0) {
+		reservedRows++
+	}
+	if m.result.Account != "" || m.result.ARN != "" {
+		reservedRows++
+	}
+	return max(1, m.height-reservedRows)
+}
+
 func (m Model) renderInstanceRow(cursor string, inst domain.Instance) string {
 	switch {
 	case m.isCompactTable():
@@ -975,19 +1101,31 @@ func (m Model) renderInstanceRow(cursor string, inst domain.Instance) string {
 			trim(string(inst.SSMStatus), 13),
 		)
 	case m.isMediumTable():
-		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-13s",
+		return fmt.Sprintf("%-2s%-18s  %-19s  %-13s  %-13s",
 			cursor,
 			trim(inst.Name, 18),
 			trim(inst.ID, 19),
-			trim(inst.State, 10),
+			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 		)
+	case m.isWideTable():
+		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s",
+			cursor,
+			trim(inst.Name, 18),
+			trim(inst.ID, 19),
+			trim(inst.Type, 10),
+			trim(inst.State, 13),
+			trim(string(inst.SSMStatus), 13),
+			trim(inst.PrivateIP, 15),
+			trim(inst.PublicIP, 15),
+			trim(inst.Region, 12),
+		)
 	default:
-		return fmt.Sprintf("%-2s%-22s  %-19s  %-10s  %-13s  %-15s",
+		return fmt.Sprintf("%-2s%-22s  %-19s  %-13s  %-13s  %-15s",
 			cursor,
 			trim(inst.Name, 22),
 			trim(inst.ID, 19),
-			trim(inst.State, 10),
+			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 			trim(inst.PrivateIP, 15),
 		)
@@ -1007,6 +1145,7 @@ func (m Model) renderDetails() string {
 	fmt.Fprintf(&b, "%s\n", renderKV("Instance ID", inst.ID))
 	fmt.Fprintf(&b, "%s\n", renderKV("Type", emptyText(inst.Type)))
 	fmt.Fprintf(&b, "%s\n", renderKV("State", emptyText(inst.State)))
+	fmt.Fprintf(&b, "%s\n", renderKV("Created", timestampText(inst.CreatedAt)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Private IP", emptyText(inst.PrivateIP)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Public IP", emptyText(inst.PublicIP)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Region", emptyText(inst.Region)))
@@ -1029,14 +1168,10 @@ func (m Model) renderDetails() string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	visibleKeys := keys
-	if len(visibleKeys) > detailsTagLimit {
-		visibleKeys = visibleKeys[:detailsTagLimit]
-	}
-	for _, key := range visibleKeys {
+	for _, key := range keys[:min(len(keys), detailsTagLimit)] {
 		fmt.Fprintf(&b, "  %s\n", renderKV(key, inst.Tags[key]))
 	}
-	if hidden := len(keys) - len(visibleKeys); hidden > 0 {
+	if hidden := len(keys) - detailsTagLimit; hidden > 0 {
 		fmt.Fprintf(&b, "  %s\n", subtleStyle.Render(fmt.Sprintf("+ %d more tags", hidden)))
 	}
 	return b.String()
@@ -1098,10 +1233,12 @@ func (m Model) renderHelp() string {
 		renderHelpSection("Instances", [][2]string{
 			{"up/down or k/j", "move selection"},
 			{"/", "search"},
+			{"w", "toggle wide columns"},
+			{"N/I/S/M/P", "sort name/id/state/SSM/private IP"},
 			{"r", "refresh inventory"},
 			{"Enter", "start shell session"},
 			{"f", "open port forwarding modal"},
-			{"d / Tab", "toggle details on narrow terminals"},
+			{"d / Tab", "show details on narrow terminals; press again to return"},
 			{"t", "show tunnels"},
 			{"h", "show health"},
 			{"p", "choose AWS profile"},
@@ -1109,8 +1246,8 @@ func (m Model) renderHelp() string {
 		}),
 		renderHelpSection("Search", [][2]string{
 			{"type", "filter visible instances"},
-			{"Esc", "clear query, then close search"},
-			{"Enter", "start shell for selected result"},
+			{"Esc / Enter", "close search and keep filter"},
+			{"Ctrl+U", "clear filter"},
 		}),
 		renderHelpSection("Profile Picker", [][2]string{
 			{"up/down or k/j", "select profile"},
@@ -1260,12 +1397,11 @@ func tunnelDiagnostic(tunnel domain.Tunnel) string {
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		if m.searchQuery != "" {
-			m.searchQuery = ""
-			m.applySearch("")
-			return m, nil
-		}
 		m.searchActive = false
+		return m, nil
+	case tea.KeyCtrlU:
+		m.searchQuery = ""
+		m.applySearch("")
 		return m, nil
 	case tea.KeyBackspace:
 		if m.searchQuery != "" {
@@ -1275,7 +1411,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEnter:
-		return m.startShell()
+		m.searchActive = false
+		return m, nil
 	}
 
 	if msg.Type == tea.KeyRunes {
@@ -1297,6 +1434,7 @@ func (m *Model) applySearch(preferredID string) {
 			}
 		}
 	}
+	m.applySort()
 	m.selected = 0
 	if preferredID != "" {
 		for i, inst := range m.visible {
@@ -1309,6 +1447,85 @@ func (m *Model) applySearch(preferredID string) {
 	if len(m.visible) == 0 {
 		m.selected = 0
 	}
+}
+
+func (m *Model) toggleSort(key instanceSortKey) {
+	keepID := m.selectedInstanceID()
+	if m.sortKey == key {
+		m.sortDescending = !m.sortDescending
+	} else {
+		m.sortKey = key
+		m.sortDescending = false
+	}
+	m.applySearch(keepID)
+	m.status = "sorted by " + m.sortLabel()
+}
+
+func (m *Model) applySort() {
+	if m.sortKey == sortNone || len(m.visible) < 2 {
+		return
+	}
+	sort.SliceStable(m.visible, func(i, j int) bool {
+		cmp := compareInstances(m.visible[i], m.visible[j], m.sortKey)
+		if cmp == 0 {
+			cmp = strings.Compare(m.visible[i].ID, m.visible[j].ID)
+		}
+		if m.sortDescending {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+}
+
+func compareInstances(left, right domain.Instance, key instanceSortKey) int {
+	var l, r string
+	switch key {
+	case sortInstanceID:
+		l, r = left.ID, right.ID
+	case sortState:
+		l, r = left.State, right.State
+	case sortSSM:
+		l, r = string(left.SSMStatus), string(right.SSMStatus)
+	case sortPrivateIP:
+		return comparePrivateIP(left.PrivateIP, right.PrivateIP)
+	default:
+		l, r = left.Name, right.Name
+		if l == "" {
+			l = left.ID
+		}
+		if r == "" {
+			r = right.ID
+		}
+	}
+	return strings.Compare(strings.ToLower(l), strings.ToLower(r))
+}
+
+func comparePrivateIP(left, right string) int {
+	laddr, lok := parseIP(left)
+	raddr, rok := parseIP(right)
+	switch {
+	case lok && rok:
+		return laddr.Compare(raddr)
+	case lok:
+		return -1
+	case rok:
+		return 1
+	default:
+		return strings.Compare(strings.ToLower(left), strings.ToLower(right))
+	}
+}
+
+func parseIP(value string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	return addr, err == nil
+}
+
+func (m Model) sortLabel() string {
+	direction := "asc"
+	if m.sortDescending {
+		direction = "desc"
+	}
+	return string(m.sortKey) + " " + direction
 }
 
 func matchesSearch(inst domain.Instance, query string) bool {
@@ -1375,15 +1592,19 @@ func (m Model) footer() string {
 		return "Esc instances  q quit"
 	}
 	if m.searchActive {
-		return "type to search  Esc clear/close  Enter shell"
+		return "type filter  Ctrl+U clear  Esc/Enter close"
 	}
 	if m.view == viewInstances && m.isNarrowLayout() {
-		if m.detailsFocused {
-			return "d/Tab instances  ↑↓ move  Enter shell  f tunnel  q quit"
+		wideHint := "w wide"
+		if m.wideMode {
+			wideHint = "w default"
 		}
-		return "↑↓ move  d/Tab details  / search  Enter shell  f tunnel  q quit"
+		if m.detailsFocused {
+			return "d/Tab instances  ↑↓/Pg move  " + wideHint + "  Enter shell  f tunnel  q quit"
+		}
+		return "↑↓/Pg move  d/Tab details  / filter  " + wideHint + "  Enter shell  f tunnel  q quit"
 	}
-	return components.Footer()
+	return components.Footer(m.wideMode)
 }
 
 func (m Model) isNarrowLayout() bool {
@@ -1396,6 +1617,10 @@ func (m Model) isCompactTable() bool {
 
 func (m Model) isMediumTable() bool {
 	return m.width > 0 && m.width < mediumTableMinWidth && !m.isCompactTable()
+}
+
+func (m Model) isWideTable() bool {
+	return m.wideMode && (m.width <= 0 || m.width >= wideTableMinWidth)
 }
 
 func (m Model) tunnels() []domain.Tunnel {
@@ -1429,16 +1654,17 @@ func trim(value string, width int) string {
 	if value == "" {
 		value = "-"
 	}
-	if len(value) <= width {
+	runes := []rune(value)
+	if len(runes) <= width {
 		return value
 	}
 	if width <= 1 {
-		return value[:width]
+		return string(runes[:width])
 	}
 	if width <= 3 {
-		return value[:width]
+		return string(runes[:width])
 	}
-	return value[:width-3] + "..."
+	return string(runes[:width-3]) + "..."
 }
 
 func emptyText(value string) string {
@@ -1456,6 +1682,10 @@ func normalizeAppVersion(value string) string {
 }
 
 func lastPingText(unix int64) string {
+	return timestampText(unix)
+}
+
+func timestampText(unix int64) string {
 	if unix == 0 {
 		return "-"
 	}

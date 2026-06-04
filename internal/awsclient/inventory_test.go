@@ -35,11 +35,13 @@ func (f fakeSSMClient) DescribeInstanceInformation(context.Context, *ssm.Describ
 
 func TestMapEC2Instance(t *testing.T) {
 	provider := InventoryProvider{Region: "eu-central-1"}
+	launchTime := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
 	got := provider.mapEC2Instance(ec2types.Instance{
 		InstanceId:       aws.String("i-123"),
 		InstanceType:     ec2types.InstanceTypeT3Micro,
 		PrivateIpAddress: aws.String("10.0.0.10"),
 		PublicIpAddress:  aws.String("18.1.2.3"),
+		LaunchTime:       aws.Time(launchTime),
 		State:            &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
 		Tags: []ec2types.Tag{
 			{Key: aws.String("Name"), Value: aws.String("api")},
@@ -52,6 +54,9 @@ func TestMapEC2Instance(t *testing.T) {
 	}
 	if got.Region != "eu-central-1" || got.SSMStatus != domain.SSMStatusNotManaged {
 		t.Fatalf("expected region and default not-managed SSM status, got %#v", got)
+	}
+	if got.CreatedAt != launchTime.Unix() {
+		t.Fatalf("expected launch time to be mapped, got %d", got.CreatedAt)
 	}
 	if got.Tags["Environment"] != "prod" {
 		t.Fatalf("expected tags to be preserved, got %#v", got.Tags)

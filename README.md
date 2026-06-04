@@ -50,16 +50,20 @@ AWS permissions:
 
 ### Install From GitHub Releases
 
-This is the recommended path for workstation use. Download the latest Linux archive
-for your CPU architecture from [GitHub Releases](https://github.com/luk-kop/sesame/releases).
+This is the recommended path for workstation use. Pick a release tag from
+[GitHub Releases](https://github.com/luk-kop/sesame/releases), then download the
+Linux archive for your CPU architecture.
 
 For x86_64 / amd64:
 
 ```sh
-curl -L -o sesame_linux_amd64.tar.gz \
-  https://github.com/luk-kop/sesame/releases/latest/download/sesame_linux_amd64.tar.gz
+VERSION=v0.1.0 # replace with your chosen tag
+V="${VERSION#v}"
 
-tar -xzf sesame_linux_amd64.tar.gz
+curl -L -o "sesame_${V}_linux_amd64.tar.gz" \
+  "https://github.com/luk-kop/sesame/releases/download/${VERSION}/sesame_${V}_linux_amd64.tar.gz"
+
+tar -xzf "sesame_${V}_linux_amd64.tar.gz"
 mkdir -p ~/.local/bin
 install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 ```
@@ -67,10 +71,13 @@ install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 For arm64:
 
 ```sh
-curl -L -o sesame_linux_arm64.tar.gz \
-  https://github.com/luk-kop/sesame/releases/latest/download/sesame_linux_arm64.tar.gz
+VERSION=v0.1.0 # replace with your chosen tag
+V="${VERSION#v}"
 
-tar -xzf sesame_linux_arm64.tar.gz
+curl -L -o "sesame_${V}_linux_arm64.tar.gz" \
+  "https://github.com/luk-kop/sesame/releases/download/${VERSION}/sesame_${V}_linux_arm64.tar.gz"
+
+tar -xzf "sesame_${V}_linux_arm64.tar.gz"
 mkdir -p ~/.local/bin
 install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 ```
@@ -143,6 +150,7 @@ List instances from the active region:
 
 ```sh
 sesame list --profile dev --region eu-central-1
+sesame list --profile dev --region eu-central-1 --limit 50
 sesame list --name api --ssm online --output json
 ```
 
@@ -160,7 +168,9 @@ sesame tunnel i-0123456789abcdef0 --local-port 15432 --remote-port 5432 --profil
 
 `sesame list` uses the AWS SDK only. The TUI, `shell`, and `tunnel` require both `aws` and `session-manager-plugin` in `PATH` because sessions are started through `aws ssm start-session`.
 
-In the TUI, `g` opens the region picker. The input is always editable, and SeSaMe lazily loads available regions with `ec2:DescribeRegions` for the current profile/region. If region loading fails, manual input still works.
+In the TUI, `/` opens a visible filter bar. The filter is local and case-insensitive across name, instance ID, IPs, tags, EC2 state, SSM status and region. `Esc` or `Enter` closes the filter bar while keeping the filter active; `Ctrl+U` clears it.
+
+The instance table is keyboard-first: `w` toggles wide columns when the terminal is wide enough, `N/I/S/M/P` sort by name, instance ID, state, SSM status and private IP, and repeating the same sort key reverses direction. `g` opens the region picker. The input is always editable, and SeSaMe lazily loads available regions with `ec2:DescribeRegions` for the current profile/region. If region loading fails, manual input still works.
 
 ## Exit Codes
 
