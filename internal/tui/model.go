@@ -68,9 +68,8 @@ const (
 	sortPrivateIP  instanceSortKey = "private IP"
 )
 
-const detailsTagLimit = 8
 const wideDetailsMinWidth = 132
-const wideTableMinWidth = 120
+const wideTableMinWidth = 124
 const mediumTableMinWidth = 96
 const compactTableMinWidth = 72
 const defaultAppVersion = "dev revision=unknown build_date=unknown"
@@ -1029,14 +1028,14 @@ func (m Model) renderInstanceTable() string {
 		fmt.Fprintf(&b, "%-2s%-16s  %-19s  %-13s\n", "", "Name", "Instance ID", "SSM")
 		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 54)))
 	case m.isMediumTable():
-		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s\n", "", "Name", "Instance ID", "State", "SSM")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 68)))
+		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-13s  %-13s\n", "", "Name", "Instance ID", "State", "SSM")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 71)))
 	case m.isWideTable():
-		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-10s  %-13s  %-15s  %-15s  %-12s\n", "", "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "Public IP", "Region")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 118)))
+		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s\n", "", "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "Public IP", "Region")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 121)))
 	default:
-		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-10s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 88)))
+		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-13s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 91)))
 	}
 	for i := start; i < end; i++ {
 		inst := m.visible[i]
@@ -1077,7 +1076,16 @@ func (m Model) instanceTableRowLimit() int {
 	if m.height <= 0 {
 		return len(m.visible)
 	}
-	const reservedRows = 8
+	reservedRows := 10
+	if m.searchActive {
+		reservedRows++
+	}
+	if len(m.result.Warnings) > 0 || m.status != "" || m.searchQuery != "" || m.sortKey != sortNone || (m.tunnelManager != nil && len(m.tunnelManager.List()) > 0) {
+		reservedRows++
+	}
+	if m.result.Account != "" || m.result.ARN != "" {
+		reservedRows++
+	}
 	return max(1, m.height-reservedRows)
 }
 
@@ -1091,31 +1099,31 @@ func (m Model) renderInstanceRow(cursor string, inst domain.Instance) string {
 			trim(string(inst.SSMStatus), 13),
 		)
 	case m.isMediumTable():
-		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-13s",
+		return fmt.Sprintf("%-2s%-18s  %-19s  %-13s  %-13s",
 			cursor,
 			trim(inst.Name, 18),
 			trim(inst.ID, 19),
-			trim(inst.State, 10),
+			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 		)
 	case m.isWideTable():
-		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-10s  %-13s  %-15s  %-15s  %-12s",
+		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s",
 			cursor,
 			trim(inst.Name, 18),
 			trim(inst.ID, 19),
 			trim(inst.Type, 10),
-			trim(inst.State, 10),
+			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 			trim(inst.PrivateIP, 15),
 			trim(inst.PublicIP, 15),
 			trim(inst.Region, 12),
 		)
 	default:
-		return fmt.Sprintf("%-2s%-22s  %-19s  %-10s  %-13s  %-15s",
+		return fmt.Sprintf("%-2s%-22s  %-19s  %-13s  %-13s  %-15s",
 			cursor,
 			trim(inst.Name, 22),
 			trim(inst.ID, 19),
-			trim(inst.State, 10),
+			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 			trim(inst.PrivateIP, 15),
 		)
@@ -1135,6 +1143,7 @@ func (m Model) renderDetails() string {
 	fmt.Fprintf(&b, "%s\n", renderKV("Instance ID", inst.ID))
 	fmt.Fprintf(&b, "%s\n", renderKV("Type", emptyText(inst.Type)))
 	fmt.Fprintf(&b, "%s\n", renderKV("State", emptyText(inst.State)))
+	fmt.Fprintf(&b, "%s\n", renderKV("Created", timestampText(inst.CreatedAt)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Private IP", emptyText(inst.PrivateIP)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Public IP", emptyText(inst.PublicIP)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Region", emptyText(inst.Region)))
@@ -1157,15 +1166,8 @@ func (m Model) renderDetails() string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	visibleKeys := keys
-	if len(visibleKeys) > detailsTagLimit {
-		visibleKeys = visibleKeys[:detailsTagLimit]
-	}
-	for _, key := range visibleKeys {
+	for _, key := range keys {
 		fmt.Fprintf(&b, "  %s\n", renderKV(key, inst.Tags[key]))
-	}
-	if hidden := len(keys) - len(visibleKeys); hidden > 0 {
-		fmt.Fprintf(&b, "  %s\n", subtleStyle.Render(fmt.Sprintf("+ %d more tags", hidden)))
 	}
 	return b.String()
 }
@@ -1231,7 +1233,7 @@ func (m Model) renderHelp() string {
 			{"r", "refresh inventory"},
 			{"Enter", "start shell session"},
 			{"f", "open port forwarding modal"},
-			{"d / Tab", "toggle details on narrow terminals"},
+			{"d / Tab", "show details on narrow terminals; press again to return"},
 			{"t", "show tunnels"},
 			{"h", "show health"},
 			{"p", "choose AWS profile"},
@@ -1654,6 +1656,10 @@ func normalizeAppVersion(value string) string {
 }
 
 func lastPingText(unix int64) string {
+	return timestampText(unix)
+}
+
+func timestampText(unix int64) string {
 	if unix == 0 {
 		return "-"
 	}

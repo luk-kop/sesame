@@ -47,6 +47,7 @@ type Instance struct {
 	Region    string            `json:"region"`
 	SSMStatus SSMStatus         `json:"ssmStatus"`
 	Agent     AgentInfo         `json:"agent,omitempty"`
+	CreatedAt int64             `json:"createdAt,omitempty"`
 	Tags      map[string]string `json:"tags,omitempty"`
 }
 

@@ -110,6 +110,10 @@ func (p InventoryProvider) mapEC2Instance(inst ec2types.Instance) domain.Instanc
 	for _, tag := range inst.Tags {
 		tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 	}
+	var createdAt int64
+	if inst.LaunchTime != nil {
+		createdAt = inst.LaunchTime.Unix()
+	}
 	return domain.Instance{
 		ID:        aws.ToString(inst.InstanceId),
 		Name:      tags["Name"],
@@ -119,6 +123,7 @@ func (p InventoryProvider) mapEC2Instance(inst ec2types.Instance) domain.Instanc
 		PublicIP:  aws.ToString(inst.PublicIpAddress),
 		Region:    p.Region,
 		SSMStatus: domain.SSMStatusNotManaged,
+		CreatedAt: createdAt,
 		Tags:      tags,
 	}
 }

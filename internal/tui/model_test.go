@@ -115,6 +115,7 @@ func TestViewRendersSelectedInstanceDetailsAndSortedTags(t *testing.T) {
 			PublicIP:  "18.1.2.3",
 			Region:    "eu-central-1",
 			SSMStatus: domain.SSMStatusOnline,
+			CreatedAt: 1600000000,
 			Agent: domain.AgentInfo{
 				Version:          "3.2.1",
 				LastPingUnixTime: 1700000000,
@@ -134,6 +135,7 @@ func TestViewRendersSelectedInstanceDetailsAndSortedTags(t *testing.T) {
 		"Name: api",
 		"Instance ID: i-123",
 		"Type: t3.micro",
+		"Created: 2020-09-13 12:26:40 UTC",
 		"Private IP: 10.0.0.10",
 		"Public IP: 18.1.2.3",
 		"Agent version: 3.2.1",
@@ -347,6 +349,27 @@ func TestWideModeAddsOperationalColumnsWhenTerminalIsWideEnough(t *testing.T) {
 	}
 }
 
+func TestInstanceTableShowsLongEC2State(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "api",
+		State:     "shutting-down",
+		PrivateIP: "10.0.0.10",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	table := model.renderInstanceTable()
+	if !strings.Contains(table, "shutting-down") {
+		t.Fatalf("expected table to show full EC2 state, got:\n%s", table)
+	}
+}
+
 func TestWideModeFallsBackOnNarrowTerminal(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
@@ -386,10 +409,10 @@ func TestInstanceTableLimitsRowsToTerminalHeight(t *testing.T) {
 	model.visible = testInstances(20)
 
 	table := model.renderInstanceTable()
-	if strings.Contains(table, "api-05") {
+	if strings.Contains(table, "api-02") {
 		t.Fatalf("expected table to render only visible window rows, got:\n%s", table)
 	}
-	for _, want := range []string{"Instances (1-4 of 20)", "api-00", "api-03"} {
+	for _, want := range []string{"Instances (1-2 of 20)", "api-00", "api-01"} {
 		if !strings.Contains(table, want) {
 			t.Fatalf("expected table to contain %q, got:\n%s", want, table)
 		}
@@ -408,7 +431,7 @@ func TestInstanceTableWindowFollowsSelection(t *testing.T) {
 	model.selected = 10
 
 	table := model.renderInstanceTable()
-	for _, want := range []string{"Instances (9-12 of 20)", "> api-10"} {
+	for _, want := range []string{"Instances (10-11 of 20)", "> api-10"} {
 		if !strings.Contains(table, want) {
 			t.Fatalf("expected selected instance in visible window with %q, got:\n%s", want, table)
 		}
@@ -432,7 +455,7 @@ func TestPageDownMovesSelectionByVisibleRows(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	model = updated.(Model)
 
-	if model.selected != 4 {
+	if model.selected != 2 {
 		t.Fatalf("expected PgDown to move by visible row count, got %d", model.selected)
 	}
 }
@@ -474,7 +497,7 @@ func TestSortShortcutsOrderVisibleInstancesAndToggleDirection(t *testing.T) {
 	}
 }
 
-func TestDetailsLimitsRenderedTags(t *testing.T) {
+func TestDetailsRendersAllTags(t *testing.T) {
 	tags := map[string]string{}
 	for _, key := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
 		tags[key] = strings.ToLower(key)
@@ -499,11 +522,13 @@ func TestDetailsLimitsRenderedTags(t *testing.T) {
 	}})
 
 	view := updated.(Model).View()
-	if !strings.Contains(view, "+ 2 more tags") {
-		t.Fatalf("expected hidden tag count, got:\n%s", view)
+	for _, want := range []string{"A: a", "H: h", "I: i", "J: j"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected details to contain tag %q, got:\n%s", want, view)
+		}
 	}
-	if strings.Contains(view, "I: i") || strings.Contains(view, "J: j") {
-		t.Fatalf("expected tags beyond limit to be hidden, got:\n%s", view)
+	if strings.Contains(view, "more tags") {
+		t.Fatalf("expected details to render all tags without hidden count, got:\n%s", view)
 	}
 }
 
