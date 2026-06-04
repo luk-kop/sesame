@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -69,9 +70,10 @@ const (
 )
 
 const wideDetailsMinWidth = 132
-const wideTableMinWidth = 124
+const wideTableMinWidth = 131
 const mediumTableMinWidth = 96
 const compactTableMinWidth = 72
+const detailsTagLimit = 8
 const defaultAppVersion = "dev revision=unknown build_date=unknown"
 
 type tunnelPreset struct {
@@ -1032,7 +1034,7 @@ func (m Model) renderInstanceTable() string {
 		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 71)))
 	case m.isWideTable():
 		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s\n", "", "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "Public IP", "Region")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 121)))
+		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", wideTableMinWidth)))
 	default:
 		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-13s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
 		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 91)))
@@ -1166,8 +1168,11 @@ func (m Model) renderDetails() string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
+	for _, key := range keys[:min(len(keys), detailsTagLimit)] {
 		fmt.Fprintf(&b, "  %s\n", renderKV(key, inst.Tags[key]))
+	}
+	if hidden := len(keys) - detailsTagLimit; hidden > 0 {
+		fmt.Fprintf(&b, "  %s\n", subtleStyle.Render(fmt.Sprintf("+ %d more tags", hidden)))
 	}
 	return b.String()
 }
@@ -1482,7 +1487,7 @@ func compareInstances(left, right domain.Instance, key instanceSortKey) int {
 	case sortSSM:
 		l, r = string(left.SSMStatus), string(right.SSMStatus)
 	case sortPrivateIP:
-		l, r = left.PrivateIP, right.PrivateIP
+		return comparePrivateIP(left.PrivateIP, right.PrivateIP)
 	default:
 		l, r = left.Name, right.Name
 		if l == "" {
@@ -1493,6 +1498,26 @@ func compareInstances(left, right domain.Instance, key instanceSortKey) int {
 		}
 	}
 	return strings.Compare(strings.ToLower(l), strings.ToLower(r))
+}
+
+func comparePrivateIP(left, right string) int {
+	laddr, lok := parseIP(left)
+	raddr, rok := parseIP(right)
+	switch {
+	case lok && rok:
+		return laddr.Compare(raddr)
+	case lok:
+		return -1
+	case rok:
+		return 1
+	default:
+		return strings.Compare(strings.ToLower(left), strings.ToLower(right))
+	}
+}
+
+func parseIP(value string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	return addr, err == nil
 }
 
 func (m Model) sortLabel() string {
@@ -1629,16 +1654,17 @@ func trim(value string, width int) string {
 	if value == "" {
 		value = "-"
 	}
-	if len(value) <= width {
+	runes := []rune(value)
+	if len(runes) <= width {
 		return value
 	}
 	if width <= 1 {
-		return value[:width]
+		return string(runes[:width])
 	}
 	if width <= 3 {
-		return value[:width]
+		return string(runes[:width])
 	}
-	return value[:width-3] + "..."
+	return string(runes[:width-3]) + "..."
 }
 
 func emptyText(value string) string {

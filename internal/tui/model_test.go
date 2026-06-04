@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -349,6 +350,40 @@ func TestWideModeAddsOperationalColumnsWhenTerminalIsWideEnough(t *testing.T) {
 	}
 }
 
+func TestWideModeUsesActualWideRowWidth(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.wideMode = true
+	model.visible = []domain.Instance{{
+		ID:        "i-12345678901234567",
+		Name:      "api",
+		State:     "running",
+		Type:      "t3.micro",
+		PrivateIP: "10.0.0.10",
+		PublicIP:  "18.1.2.3",
+		Region:    "eu-central-1",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	model.width = wideTableMinWidth - 1
+	if strings.Contains(model.renderInstanceTable(), "Public IP") {
+		t.Fatalf("expected wide table to stay disabled below actual row width")
+	}
+
+	model.width = wideTableMinWidth
+	table := model.renderInstanceTable()
+	if !strings.Contains(table, "Public IP") {
+		t.Fatalf("expected wide table at actual row width, got:\n%s", table)
+	}
+	if got := len(model.renderInstanceRow(" ", model.visible[0])); got != wideTableMinWidth {
+		t.Fatalf("expected wide row width %d, got %d", wideTableMinWidth, got)
+	}
+}
+
 func TestInstanceTableShowsLongEC2State(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
@@ -497,7 +532,30 @@ func TestSortShortcutsOrderVisibleInstancesAndToggleDirection(t *testing.T) {
 	}
 }
 
-func TestDetailsRendersAllTags(t *testing.T) {
+func TestPrivateIPSortUsesNumericAddressOrder(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.view = viewInstances
+	model.result = domain.ListResult{Instances: []domain.Instance{
+		{ID: "i-100", Name: "hundred", PrivateIP: "10.0.0.100", SSMStatus: domain.SSMStatusOnline},
+		{ID: "i-20", Name: "twenty", PrivateIP: "10.0.0.20", SSMStatus: domain.SSMStatusOnline},
+		{ID: "i-3", Name: "three", PrivateIP: "10.0.0.3", SSMStatus: domain.SSMStatusOnline},
+	}}
+	model.visible = append([]domain.Instance(nil), model.result.Instances...)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = updated.(Model)
+
+	if got := []string{model.visible[0].ID, model.visible[1].ID, model.visible[2].ID}; got[0] != "i-3" || got[1] != "i-20" || got[2] != "i-100" {
+		t.Fatalf("expected numeric private IP sort, got %#v", got)
+	}
+}
+
+func TestDetailsLimitsRenderedTags(t *testing.T) {
 	tags := map[string]string{}
 	for _, key := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
 		tags[key] = strings.ToLower(key)
@@ -523,12 +581,28 @@ func TestDetailsRendersAllTags(t *testing.T) {
 
 	view := updated.(Model).View()
 	for _, want := range []string{"A: a", "H: h", "I: i", "J: j"} {
+		if want == "I: i" || want == "J: j" {
+			if strings.Contains(view, want) {
+				t.Fatalf("expected details to hide excess tag %q, got:\n%s", want, view)
+			}
+			continue
+		}
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected details to contain tag %q, got:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "more tags") {
-		t.Fatalf("expected details to render all tags without hidden count, got:\n%s", view)
+	if !strings.Contains(view, "+ 2 more tags") {
+		t.Fatalf("expected details to show hidden tag count, got:\n%s", view)
+	}
+}
+
+func TestTrimPreservesUTF8(t *testing.T) {
+	got := trim("ąąąąą", 4)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 after trim, got %q", got)
+	}
+	if got != "ą..." {
+		t.Fatalf("expected rune-safe trim, got %q", got)
 	}
 }
 

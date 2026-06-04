@@ -57,7 +57,7 @@ Linux archive for your CPU architecture.
 For x86_64 / amd64:
 
 ```sh
-VERSION=v0.1.0
+VERSION=v0.1.0 # replace with your chosen tag
 V="${VERSION#v}"
 
 curl -L -o "sesame_${V}_linux_amd64.tar.gz" \
@@ -71,7 +71,7 @@ install -m 0755 sesame_*/sesame ~/.local/bin/sesame
 For arm64:
 
 ```sh
-VERSION=v0.1.0
+VERSION=v0.1.0 # replace with your chosen tag
 V="${VERSION#v}"
 
 curl -L -o "sesame_${V}_linux_arm64.tar.gz" \
