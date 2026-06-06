@@ -114,17 +114,31 @@ func (p InventoryProvider) mapEC2Instance(inst ec2types.Instance) domain.Instanc
 	if inst.LaunchTime != nil {
 		createdAt = inst.LaunchTime.Unix()
 	}
+	var az string
+	if inst.Placement != nil {
+		az = aws.ToString(inst.Placement.AvailabilityZone)
+	}
+	securityGroups := make([]domain.SecurityGroup, 0, len(inst.SecurityGroups))
+	for _, sg := range inst.SecurityGroups {
+		securityGroups = append(securityGroups, domain.SecurityGroup{
+			ID:   aws.ToString(sg.GroupId),
+			Name: aws.ToString(sg.GroupName),
+		})
+	}
 	return domain.Instance{
-		ID:        aws.ToString(inst.InstanceId),
-		Name:      tags["Name"],
-		State:     string(inst.State.Name),
-		Type:      string(inst.InstanceType),
-		PrivateIP: aws.ToString(inst.PrivateIpAddress),
-		PublicIP:  aws.ToString(inst.PublicIpAddress),
-		Region:    p.Region,
-		SSMStatus: domain.SSMStatusNotManaged,
-		CreatedAt: createdAt,
-		Tags:      tags,
+		ID:             aws.ToString(inst.InstanceId),
+		Name:           tags["Name"],
+		State:          string(inst.State.Name),
+		Type:           string(inst.InstanceType),
+		AMIID:          aws.ToString(inst.ImageId),
+		PrivateIP:      aws.ToString(inst.PrivateIpAddress),
+		PublicIP:       aws.ToString(inst.PublicIpAddress),
+		Region:         p.Region,
+		AZ:             az,
+		SSMStatus:      domain.SSMStatusNotManaged,
+		CreatedAt:      createdAt,
+		SecurityGroups: securityGroups,
+		Tags:           tags,
 	}
 }
 

@@ -37,18 +37,26 @@ type AgentInfo struct {
 	PlatformType     string `json:"platformType,omitempty"`
 }
 
+type SecurityGroup struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
 type Instance struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name,omitempty"`
-	State     string            `json:"state"`
-	Type      string            `json:"type,omitempty"`
-	PrivateIP string            `json:"privateIp,omitempty"`
-	PublicIP  string            `json:"publicIp,omitempty"`
-	Region    string            `json:"region"`
-	SSMStatus SSMStatus         `json:"ssmStatus"`
-	Agent     AgentInfo         `json:"agent,omitempty"`
-	CreatedAt int64             `json:"createdAt,omitempty"`
-	Tags      map[string]string `json:"tags,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name,omitempty"`
+	State          string            `json:"state"`
+	Type           string            `json:"type,omitempty"`
+	AMIID          string            `json:"amiId,omitempty"`
+	PrivateIP      string            `json:"privateIp,omitempty"`
+	PublicIP       string            `json:"publicIp,omitempty"`
+	Region         string            `json:"region"`
+	AZ             string            `json:"availabilityZone,omitempty"`
+	SSMStatus      SSMStatus         `json:"ssmStatus"`
+	Agent          AgentInfo         `json:"agent,omitempty"`
+	CreatedAt      int64             `json:"createdAt,omitempty"`
+	SecurityGroups []SecurityGroup   `json:"securityGroups,omitempty"`
+	Tags           map[string]string `json:"tags,omitempty"`
 }
 
 type Warning struct {
