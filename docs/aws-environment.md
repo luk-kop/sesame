@@ -53,9 +53,13 @@ Profile switching is disabled when:
 - active tunnels are running,
 - profile switching is unavailable in the current runtime context.
 
+See [TUI profile switch flow](tui-profile-switch-flow.md) for the detailed state transitions and error behavior.
+
 Press `g` in the TUI to choose a region. The picker opens immediately with manual input enabled, then lazily loads available regions with `ec2:DescribeRegions` for the current auth/profile/region. If regions cannot be loaded, SeSaMe shows the error in the modal and health view, and manual input remains available.
 
 Region switching is disabled when:
 
 - active tunnels are running,
 - region switching is unavailable in the current runtime context.
+
+Dynamic region suggestions are optional. They require `ec2:DescribeRegions`, but inventory loading, shell sessions and tunnels only require a resolved region from flags, environment, profile config or manual TUI input. See [TUI region switch flow](tui-region-switch-flow.md) for the detailed state transitions and error behavior.

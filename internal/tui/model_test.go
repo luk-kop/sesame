@@ -84,7 +84,7 @@ func TestViewRendersInventoryAndIdentityContext(t *testing.T) {
 		"Auth: profile-active dev",
 		"Region: eu-central-1",
 		"Account: 123456789012",
-		"ARN: arn:aws:sts::123456789012:assumed-role/dev/test",
+		"Principal: assumed-role/dev/test",
 		"1 warning(s)",
 		"api",
 		"i-123",
@@ -93,6 +93,48 @@ func TestViewRendersInventoryAndIdentityContext(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected view to contain %q, got:\n%s", want, view)
 		}
+	}
+}
+
+func TestPrincipalLabelPreservesResourcePathAndPartitionVariants(t *testing.T) {
+	tests := []struct {
+		name string
+		arn  string
+		want string
+	}{
+		{
+			name: "iam user path",
+			arn:  "arn:aws:iam::123456789012:user/team/platform/alice",
+			want: "user/team/platform/alice",
+		},
+		{
+			name: "iam role path in aws cn",
+			arn:  "arn:aws-cn:iam::123456789012:role/team/admin/DeployRole",
+			want: "role/team/admin/DeployRole",
+		},
+		{
+			name: "assumed role in gov partition",
+			arn:  "arn:aws-us-gov:sts::123456789012:assumed-role/Admin/lukasz-session",
+			want: "assumed-role/Admin/lukasz-session",
+		},
+		{
+			name: "root",
+			arn:  "arn:aws:iam::123456789012:root",
+			want: "root",
+		},
+		{
+			name: "fallback",
+			arn:  "not-an-arn",
+			want: "not-an-arn",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := principalLabel(tt.arn); got != tt.want {
+				t.Fatalf("principalLabel(%q) = %q, want %q", tt.arn, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -112,15 +154,21 @@ func TestViewRendersSelectedInstanceDetailsAndSortedTags(t *testing.T) {
 			Name:      "api",
 			State:     "running",
 			Type:      "t3.micro",
+			AMIID:     "ami-123",
 			PrivateIP: "10.0.0.10",
 			PublicIP:  "18.1.2.3",
 			Region:    "eu-central-1",
+			AZ:        "eu-central-1a",
 			SSMStatus: domain.SSMStatusOnline,
 			CreatedAt: 1600000000,
 			Agent: domain.AgentInfo{
 				Version:          "3.2.1",
 				LastPingUnixTime: 1700000000,
 				PlatformType:     "Linux",
+			},
+			SecurityGroups: []domain.SecurityGroup{
+				{ID: "sg-123", Name: "app-ssh"},
+				{ID: "sg-456", Name: "shared-egress"},
 			},
 			Tags: map[string]string{
 				"Service":     "api",
@@ -130,18 +178,31 @@ func TestViewRendersSelectedInstanceDetailsAndSortedTags(t *testing.T) {
 		}},
 	}})
 
-	view := updated.(Model).View()
+	model = updated.(Model)
+	view := model.View()
+	if strings.Contains(view, "Details") {
+		t.Fatalf("expected details to be hidden by default, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	view = model.View()
 	for _, want := range []string{
 		"Details",
 		"Name: api",
 		"Instance ID: i-123",
 		"Type: t3.micro",
-		"Created: 2020-09-13 12:26:40 UTC",
+		"AMI ID: ami-123",
+		"Launch time: 2020-09-13 12:26:40 UTC",
 		"Private IP: 10.0.0.10",
 		"Public IP: 18.1.2.3",
+		"AZ: eu-central-1a",
 		"Agent version: 3.2.1",
 		"Agent last ping: 2023-11-14 22:13:20 UTC",
 		"Platform: Linux",
+		"Security groups",
+		"sg-123  app-ssh",
+		"sg-456  shared-egress",
 		"Tags",
 	} {
 		if !strings.Contains(view, want) {
@@ -192,12 +253,19 @@ func TestNarrowLayoutTogglesDetailsView(t *testing.T) {
 	if !strings.Contains(view, "Details") || strings.Contains(view, "Instances") {
 		t.Fatalf("expected narrow layout to show details only after toggle, got:\n%s", view)
 	}
-	if !strings.Contains(view, "d/Tab instances") {
-		t.Fatalf("expected footer to advertise instances toggle, got:\n%s", view)
+	if !strings.Contains(view, "d/Tab table") || !strings.Contains(view, "Esc table") {
+		t.Fatalf("expected footer to advertise table return, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	view = model.View()
+	if !strings.Contains(view, "Instances") || strings.Contains(view, "Details") {
+		t.Fatalf("expected Esc to hide narrow details, got:\n%s", view)
 	}
 }
 
-func TestWideLayoutKeepsListAndDetailsTogether(t *testing.T) {
+func TestDetailsViewReplacesFullTableOnDemand(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
 		nil,
@@ -220,11 +288,57 @@ func TestWideLayoutKeepsListAndDetailsTogether(t *testing.T) {
 	}})
 	model = updated.(Model)
 
+	view := model.View()
+	if !strings.Contains(view, "Instances") || strings.Contains(view, "Details") {
+		t.Fatalf("expected full layout to start with table only, got:\n%s", view)
+	}
+
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	model = updated.(Model)
+	view = model.View()
+	if !strings.Contains(view, "Details") || strings.Contains(view, "Instances") {
+		t.Fatalf("expected details to replace full table after toggle, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	view = model.View()
+	if !strings.Contains(view, "Instances") || strings.Contains(view, "Details") {
+		t.Fatalf("expected second details toggle to return to table only, got:\n%s", view)
+	}
+}
+
+func TestDetailsViewReturnsToTableAfterAuxiliaryViews(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
+	model = updated.(Model)
+	updated, _ = model.Update(inventoryLoadedMsg{result: domain.ListResult{
+		Auth:   model.auth,
+		Region: "eu-central-1",
+		Instances: []domain.Instance{{
+			ID:        "i-123",
+			Name:      "api",
+			State:     "running",
+			SSMStatus: domain.SSMStatusOnline,
+		}},
+	}})
+	model = updated.(Model)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+
 	view := model.View()
-	if !strings.Contains(view, "Instances") || !strings.Contains(view, "Details") {
-		t.Fatalf("expected wide layout to keep list and details together, got:\n%s", view)
+	if !strings.Contains(view, "Instances") || strings.Contains(view, "Details") {
+		t.Fatalf("expected returning from tunnels to show table, got:\n%s", view)
 	}
 }
 
@@ -282,6 +396,30 @@ func TestInstanceTableHidesPrivateIPOnMediumWidth(t *testing.T) {
 	}
 }
 
+func TestInstanceTableExpandsNameColumnWithAvailableWidth(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.width = 170
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "openvpn-auth-aws-openvpn",
+		State:     "running",
+		Type:      "t3.micro",
+		PrivateIP: "10.0.0.10",
+		AZ:        "eu-west-1a",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	table := model.renderInstanceTable()
+	if !strings.Contains(table, "openvpn-auth-aws-openvpn") {
+		t.Fatalf("expected available width to show full instance name, got:\n%s", table)
+	}
+}
+
 func TestInstanceTableUsesCompactColumnsOnNarrowWidth(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
@@ -311,7 +449,51 @@ func TestInstanceTableUsesCompactColumnsOnNarrowWidth(t *testing.T) {
 	}
 }
 
-func TestWideModeAddsOperationalColumnsWhenTerminalIsWideEnough(t *testing.T) {
+func TestInstanceTableUsesMediumColumnsUntilDefaultFits(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.visible = []domain.Instance{{
+		ID:        "i-123",
+		Name:      "api",
+		State:     "running",
+		Type:      "t3.micro",
+		PrivateIP: "10.0.0.10",
+		AZ:        "eu-central-1a",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	model.width = defaultTableMinWidth - 1
+	table := model.renderInstanceTable()
+	for _, notWant := range []string{"Type", "Private IP", "AZ", "t3.micro", "10.0.0.10", "eu-central-1a"} {
+		if strings.Contains(table, notWant) {
+			t.Fatalf("expected medium table below default width to hide %q, got:\n%s", notWant, table)
+		}
+	}
+	if got, want := model.instanceTableLayout().mode, instanceTableMedium; got != want {
+		t.Fatalf("expected medium table mode below default width, got %v", got)
+	}
+
+	model.width = defaultTableMinWidth
+	table = model.renderInstanceTable()
+	for _, want := range []string{"Type", "Private IP", "AZ", "t3.micro", "10.0.0.10", "eu-central-1a"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected default table at default width to contain %q, got:\n%s", want, table)
+		}
+	}
+	layout := model.instanceTableLayout()
+	if got, want := layout.mode, instanceTableDefault; got != want {
+		t.Fatalf("expected default table mode at default width, got %v", got)
+	}
+	if got, want := layout.rowWidth, model.width-4; got != want {
+		t.Fatalf("expected default row width to fit panel content width %d, got %d", want, got)
+	}
+}
+
+func TestFullTableAddsOperationalColumnsWhenTerminalIsWideEnough(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
 		nil,
@@ -327,37 +509,47 @@ func TestWideModeAddsOperationalColumnsWhenTerminalIsWideEnough(t *testing.T) {
 		PrivateIP: "10.0.0.10",
 		PublicIP:  "18.1.2.3",
 		Region:    "eu-central-1",
+		AZ:        "eu-central-1a",
+		CreatedAt: time.Now().Add(-2 * time.Hour).Unix(),
 		SSMStatus: domain.SSMStatusOnline,
 	}}
 
 	table := model.renderInstanceTable()
-	for _, notWant := range []string{"Type", "Public IP", "Region", "t3.micro", "18.1.2.3"} {
+	for _, notWant := range []string{"Public IP", "18.1.2.3", "Age"} {
 		if strings.Contains(table, notWant) {
-			t.Fatalf("expected default table to hide %q, got:\n%s", notWant, table)
+			t.Fatalf("expected standard table to hide %q, got:\n%s", notWant, table)
+		}
+	}
+	for _, want := range []string{"Type", "AZ", "t3.micro", "eu-central-1a"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("expected standard table to contain %q, got:\n%s", want, table)
 		}
 	}
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	model = updated.(Model)
+	model.width = fullTableMinWidth
 	table = model.renderInstanceTable()
-	for _, want := range []string{"Type", "Public IP", "Region", "t3.micro", "18.1.2.3", "eu-central-1"} {
+	for _, want := range []string{"Type", "Public IP", "AZ", "Age", "t3.micro", "18.1.2.3", "eu-central-1a", "2h"} {
 		if !strings.Contains(table, want) {
-			t.Fatalf("expected wide table to contain %q, got:\n%s", want, table)
+			t.Fatalf("expected full table to contain %q, got:\n%s", want, table)
 		}
 	}
-	if !strings.Contains(model.footer(), "w default") {
-		t.Fatalf("expected footer to advertise default toggle, got %q", model.footer())
+	for _, notWant := range []string{"Region"} {
+		if strings.Contains(table, notWant) {
+			t.Fatalf("expected full table to hide redundant %q, got:\n%s", notWant, table)
+		}
+	}
+	if strings.Contains(model.footer(), "w ") {
+		t.Fatalf("expected footer not to advertise wide toggle, got %q", model.footer())
 	}
 }
 
-func TestWideModeUsesActualWideRowWidth(t *testing.T) {
+func TestFullTableUsesActualFullRowWidth(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
 		nil,
 		nil,
 		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
 	)
-	model.wideMode = true
 	model.visible = []domain.Instance{{
 		ID:        "i-12345678901234567",
 		Name:      "api",
@@ -366,21 +558,46 @@ func TestWideModeUsesActualWideRowWidth(t *testing.T) {
 		PrivateIP: "10.0.0.10",
 		PublicIP:  "18.1.2.3",
 		Region:    "eu-central-1",
+		AZ:        "eu-central-1a",
+		CreatedAt: time.Now().Add(-24 * time.Hour).Unix(),
 		SSMStatus: domain.SSMStatusOnline,
 	}}
 
-	model.width = wideTableMinWidth - 1
+	model.width = fullTableMinWidth - 1
 	if strings.Contains(model.renderInstanceTable(), "Public IP") {
-		t.Fatalf("expected wide table to stay disabled below actual row width")
+		t.Fatalf("expected full table to stay disabled below full width")
 	}
 
-	model.width = wideTableMinWidth
+	model.width = fullTableMinWidth
 	table := model.renderInstanceTable()
-	if !strings.Contains(table, "Public IP") {
-		t.Fatalf("expected wide table at actual row width, got:\n%s", table)
+	if !strings.Contains(table, "Public IP") || !strings.Contains(table, "Age") {
+		t.Fatalf("expected full table at full width, got:\n%s", table)
 	}
-	if got := len(model.renderInstanceRow(" ", model.visible[0])); got != wideTableMinWidth {
-		t.Fatalf("expected wide row width %d, got %d", wideTableMinWidth, got)
+	if got, want := len(model.renderInstanceRow(" ", model.visible[0])), model.instanceTableLayout().rowWidth; got != want {
+		t.Fatalf("expected full row width %d, got %d", want, got)
+	}
+}
+
+func TestDefaultTableUsesActualRowWidth(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.width = defaultTableMinWidth
+	model.visible = []domain.Instance{{
+		ID:        "i-12345678901234567",
+		Name:      "api",
+		State:     "running",
+		Type:      "t3.micro",
+		PrivateIP: "10.0.0.10",
+		AZ:        "eu-central-1a",
+		SSMStatus: domain.SSMStatusOnline,
+	}}
+
+	if got, want := len(model.renderInstanceRow(" ", model.visible[0])), model.instanceTableLayout().rowWidth; got != want {
+		t.Fatalf("expected default row width %d, got %d", want, got)
 	}
 }
 
@@ -405,7 +622,7 @@ func TestInstanceTableShowsLongEC2State(t *testing.T) {
 	}
 }
 
-func TestWideModeFallsBackOnNarrowTerminal(t *testing.T) {
+func TestFullTableFallsBackOnNarrowTerminal(t *testing.T) {
 	model := NewModel(
 		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
 		nil,
@@ -423,12 +640,11 @@ func TestWideModeFallsBackOnNarrowTerminal(t *testing.T) {
 		Region:    "eu-central-1",
 		SSMStatus: domain.SSMStatusOnline,
 	}}
-	model.wideMode = true
 
 	table := model.renderInstanceTable()
 	for _, notWant := range []string{"Type", "Public IP", "t3.micro", "18.1.2.3"} {
 		if strings.Contains(table, notWant) {
-			t.Fatalf("expected narrow terminal to ignore wide columns %q, got:\n%s", notWant, table)
+			t.Fatalf("expected narrow terminal to ignore full columns %q, got:\n%s", notWant, table)
 		}
 	}
 }
@@ -555,6 +771,65 @@ func TestPrivateIPSortUsesNumericAddressOrder(t *testing.T) {
 	}
 }
 
+func TestAgeSortUsesLaunchTimeAndTogglesDirection(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	model.view = viewInstances
+	model.result = domain.ListResult{Instances: []domain.Instance{
+		{ID: "i-new", Name: "new", CreatedAt: 300, SSMStatus: domain.SSMStatusOnline},
+		{ID: "i-unknown", Name: "unknown", SSMStatus: domain.SSMStatusOnline},
+		{ID: "i-old", Name: "old", CreatedAt: 100, SSMStatus: domain.SSMStatusOnline},
+	}}
+	model.visible = append([]domain.Instance(nil), model.result.Instances...)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	model = updated.(Model)
+	if got := []string{model.visible[0].ID, model.visible[1].ID, model.visible[2].ID}; got[0] != "i-old" || got[1] != "i-new" || got[2] != "i-unknown" {
+		t.Fatalf("expected age ascending sort to show oldest launch time first, got %#v", got)
+	}
+	if !strings.Contains(model.View(), "Sort: age asc") {
+		t.Fatalf("expected age sort in header, got:\n%s", model.View())
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	model = updated.(Model)
+	if got := []string{model.visible[0].ID, model.visible[1].ID, model.visible[2].ID}; got[0] != "i-new" || got[1] != "i-old" || got[2] != "i-unknown" {
+		t.Fatalf("expected age descending sort to reverse launch time order, got %#v", got)
+	}
+	if !strings.Contains(model.View(), "Sort: age desc") {
+		t.Fatalf("expected descending age sort in header, got:\n%s", model.View())
+	}
+}
+
+func TestAgeTextFormatsRelativeLaunchTime(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	tests := []struct {
+		name string
+		unix int64
+		want string
+	}{
+		{name: "missing", unix: 0, want: "-"},
+		{name: "future", unix: now.Add(time.Minute).Unix(), want: "-"},
+		{name: "under minute", unix: now.Add(-30 * time.Second).Unix(), want: "<1m"},
+		{name: "minutes", unix: now.Add(-42 * time.Minute).Unix(), want: "42m"},
+		{name: "hours", unix: now.Add(-5 * time.Hour).Unix(), want: "5h"},
+		{name: "days", unix: now.Add(-17 * 24 * time.Hour).Unix(), want: "17d"},
+		{name: "years", unix: now.Add(-730 * 24 * time.Hour).Unix(), want: "2y"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ageText(tt.unix, now); got != tt.want {
+				t.Fatalf("ageText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetailsLimitsRenderedTags(t *testing.T) {
 	tags := map[string]string{}
 	for _, key := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
@@ -579,7 +854,13 @@ func TestDetailsLimitsRenderedTags(t *testing.T) {
 		}},
 	}})
 
-	view := updated.(Model).View()
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	view := model.View()
+	if !strings.Contains(view, "T expand tags") {
+		t.Fatalf("expected footer to advertise tag expansion, got:\n%s", view)
+	}
 	for _, want := range []string{"A: a", "H: h", "I: i", "J: j"} {
 		if want == "I: i" || want == "J: j" {
 			if strings.Contains(view, want) {
@@ -593,6 +874,114 @@ func TestDetailsLimitsRenderedTags(t *testing.T) {
 	}
 	if !strings.Contains(view, "+ 2 more tags") {
 		t.Fatalf("expected details to show hidden tag count, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'T'}})
+	model = updated.(Model)
+	view = model.View()
+	for _, want := range []string{"A: a", "H: h", "I: i", "J: j"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected expanded details to contain tag %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "+ 2 more tags") {
+		t.Fatalf("expected expanded details to hide hidden tag count, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Status: tags expanded") || !strings.Contains(view, "T collapse tags") {
+		t.Fatalf("expected expanded status and footer, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'T'}})
+	model = updated.(Model)
+	view = model.View()
+	if strings.Contains(view, "I: i") || !strings.Contains(view, "+ 2 more tags") {
+		t.Fatalf("expected collapsed details after second tag toggle, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Status: tags collapsed") || !strings.Contains(view, "T expand tags") {
+		t.Fatalf("expected collapsed status and footer, got:\n%s", view)
+	}
+}
+
+func TestTagExpansionRequiresVisibleDetailsAndHiddenTags(t *testing.T) {
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	updated, _ := model.Update(inventoryLoadedMsg{result: domain.ListResult{
+		Auth:   model.auth,
+		Region: "eu-central-1",
+		Instances: []domain.Instance{{
+			ID:        "i-123",
+			Name:      "api",
+			State:     "running",
+			SSMStatus: domain.SSMStatusOnline,
+			Tags: map[string]string{
+				"A": "a",
+				"B": "b",
+			},
+		}},
+	}})
+	model = updated.(Model)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'T'}})
+	model = updated.(Model)
+	view := model.View()
+	if strings.Contains(view, "T expand tags") || strings.Contains(view, "tags expanded") {
+		t.Fatalf("expected hidden details to ignore tag expansion, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	view = model.View()
+	if strings.Contains(view, "T expand tags") {
+		t.Fatalf("expected short tag list not to advertise expansion, got:\n%s", view)
+	}
+}
+
+func TestExpandedTagsResetWhenSelectionChanges(t *testing.T) {
+	firstTags := map[string]string{}
+	for _, key := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
+		firstTags[key] = strings.ToLower(key)
+	}
+	secondTags := map[string]string{}
+	for _, key := range []string{"K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"} {
+		secondTags[key] = strings.ToLower(key)
+	}
+
+	model := NewModel(
+		domain.AuthContext{Mode: domain.AuthModeProfileActive, Profile: "dev", Region: "eu-central-1"},
+		nil,
+		nil,
+		health.DependencyStatus{AWSCLI: true, SessionManagerPlugin: true},
+	)
+	updated, _ := model.Update(inventoryLoadedMsg{result: domain.ListResult{
+		Auth:   model.auth,
+		Region: "eu-central-1",
+		Instances: []domain.Instance{
+			{ID: "i-1", Name: "api", State: "running", SSMStatus: domain.SSMStatusOnline, Tags: firstTags},
+			{ID: "i-2", Name: "worker", State: "running", SSMStatus: domain.SSMStatusOnline, Tags: secondTags},
+		},
+	}})
+	model = updated.(Model)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'T'}})
+	model = updated.(Model)
+	if view := model.View(); !strings.Contains(view, "J: j") || !strings.Contains(view, "T collapse tags") {
+		t.Fatalf("expected first instance tags to be expanded, got:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	view := model.View()
+	if strings.Contains(view, "S: s") || strings.Contains(view, "T: t") {
+		t.Fatalf("expected selection change to collapse second instance tags, got:\n%s", view)
+	}
+	if !strings.Contains(view, "+ 2 more tags") || !strings.Contains(view, "T expand tags") {
+		t.Fatalf("expected collapsed tag footer after selection change, got:\n%s", view)
 	}
 }
 
@@ -1696,7 +2085,7 @@ func TestHelpOverlayOpensAndCloses(t *testing.T) {
 		t.Fatal("expected help to be open")
 	}
 	view := model.View()
-	for _, want := range []string{"Help", "Version dev revision=unknown build_date=unknown", "Global", "Instances", "d / Tab", "Profile Picker", "Region Picker", "Port Forwarding", "Tunnels", "Close with"} {
+	for _, want := range []string{"Help", "Version dev revision=unknown build_date=unknown", "Global", "Instances", "Details", "d / Tab", "Profile Picker", "Region Picker", "Port Forwarding", "Tunnels", "Close with"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected help to contain %q, got:\n%s", want, view)
 		}

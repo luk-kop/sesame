@@ -38,11 +38,17 @@ func TestMapEC2Instance(t *testing.T) {
 	launchTime := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
 	got := provider.mapEC2Instance(ec2types.Instance{
 		InstanceId:       aws.String("i-123"),
+		ImageId:          aws.String("ami-123"),
 		InstanceType:     ec2types.InstanceTypeT3Micro,
 		PrivateIpAddress: aws.String("10.0.0.10"),
 		PublicIpAddress:  aws.String("18.1.2.3"),
 		LaunchTime:       aws.Time(launchTime),
+		Placement:        &ec2types.Placement{AvailabilityZone: aws.String("eu-central-1a")},
 		State:            &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+		SecurityGroups: []ec2types.GroupIdentifier{
+			{GroupId: aws.String("sg-123"), GroupName: aws.String("app-ssh")},
+			{GroupId: aws.String("sg-456"), GroupName: aws.String("shared-egress")},
+		},
 		Tags: []ec2types.Tag{
 			{Key: aws.String("Name"), Value: aws.String("api")},
 			{Key: aws.String("Environment"), Value: aws.String("prod")},
@@ -52,8 +58,17 @@ func TestMapEC2Instance(t *testing.T) {
 	if got.ID != "i-123" || got.Name != "api" || got.State != "running" || got.Type != "t3.micro" {
 		t.Fatalf("unexpected mapped instance: %#v", got)
 	}
+	if got.AMIID != "ami-123" {
+		t.Fatalf("expected AMI ID to be mapped, got %q", got.AMIID)
+	}
 	if got.Region != "eu-central-1" || got.SSMStatus != domain.SSMStatusNotManaged {
 		t.Fatalf("expected region and default not-managed SSM status, got %#v", got)
+	}
+	if got.AZ != "eu-central-1a" {
+		t.Fatalf("expected availability zone to be mapped, got %q", got.AZ)
+	}
+	if len(got.SecurityGroups) != 2 || got.SecurityGroups[0].ID != "sg-123" || got.SecurityGroups[0].Name != "app-ssh" || got.SecurityGroups[1].ID != "sg-456" || got.SecurityGroups[1].Name != "shared-egress" {
+		t.Fatalf("expected security groups to be mapped, got %#v", got.SecurityGroups)
 	}
 	if got.CreatedAt != launchTime.Unix() {
 		t.Fatalf("expected launch time to be mapped, got %d", got.CreatedAt)

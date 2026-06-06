@@ -170,7 +170,13 @@ sesame tunnel i-0123456789abcdef0 --local-port 15432 --remote-port 5432 --profil
 
 In the TUI, `/` opens a visible filter bar. The filter is local and case-insensitive across name, instance ID, IPs, tags, EC2 state, SSM status and region. `Esc` or `Enter` closes the filter bar while keeping the filter active; `Ctrl+U` clears it.
 
-The instance table is keyboard-first: `w` toggles wide columns when the terminal is wide enough, `N/I/S/M/P` sort by name, instance ID, state, SSM status and private IP, and repeating the same sort key reverses direction. `g` opens the region picker. The input is always editable, and SeSaMe lazily loads available regions with `ec2:DescribeRegions` for the current profile/region. If region loading fails, manual input still works.
+The instance table is keyboard-first. Columns adapt to terminal width: narrow terminals show the name, instance ID and SSM status; medium terminals add EC2 state; default-width terminals add instance type, private IP and availability zone; very wide terminals also show public IP and launch age. `N/I/S/M/P/A` sort by name, instance ID, state, SSM status, private IP and age, and repeating the same sort key reverses direction.
+
+Press `d` or `Tab` to open the selected instance details view, and press `d`, `Tab` or `Esc` to return to the table. Details include AMI ID, launch time, private and public IPs, availability zone, SSM agent metadata, security groups and tags. Long tag lists are collapsed by default; press `T` in the details view to expand or collapse them.
+
+Press `p` to switch AWS profile in `profile-active` mode. Press `g` to open the region picker. The region input is always editable, and SeSaMe lazily loads available regions with `ec2:DescribeRegions` for the current profile/region. If region loading fails, manual input still works. Active tunnels block profile and region switching so existing background `aws` processes keep their original auth and region context.
+
+`sesame list --output json` is intended for scripts. The top-level output contains `auth`, `region`, `account`, `arn`, `warnings` and `instances`. Instance objects include stable EC2 and SSM fields such as `id`, `name`, `state`, `type`, `amiId`, `privateIp`, `publicIp`, `region`, `availabilityZone`, `ssmStatus`, `agent`, `createdAt`, `securityGroups` and `tags` when those values are available.
 
 ## Exit Codes
 

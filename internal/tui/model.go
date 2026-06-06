@@ -54,6 +54,7 @@ type activeView int
 
 const (
 	viewInstances activeView = iota
+	viewInstanceDetails
 	viewTunnels
 	viewHealth
 )
@@ -67,14 +68,29 @@ const (
 	sortState      instanceSortKey = "state"
 	sortSSM        instanceSortKey = "SSM"
 	sortPrivateIP  instanceSortKey = "private IP"
+	sortAge        instanceSortKey = "age"
 )
 
-const wideDetailsMinWidth = 132
-const wideTableMinWidth = 131
-const mediumTableMinWidth = 96
+const fullTableMinWidth = 150
+const defaultTableMinWidth = 125
 const compactTableMinWidth = 72
 const detailsTagLimit = 8
 const defaultAppVersion = "dev revision=unknown build_date=unknown"
+
+type instanceTableLayout struct {
+	mode      instanceTableMode
+	nameWidth int
+	rowWidth  int
+}
+
+type instanceTableMode int
+
+const (
+	instanceTableCompact instanceTableMode = iota
+	instanceTableMedium
+	instanceTableDefault
+	instanceTableFull
+)
 
 type tunnelPreset struct {
 	Name       string
@@ -92,50 +108,49 @@ var tunnelPresets = []tunnelPreset{
 }
 
 type Model struct {
-	auth             domain.AuthContext
-	inventory        app.InventoryProvider
-	identity         app.IdentityProvider
-	regionProvider   app.RegionProvider
-	dependencies     health.DependencyStatus
-	appVersion       string
-	factory          providerFactory
-	profileOptions   []string
-	regionOptions    []string
-	regionCache      map[regionCacheKey][]string
-	result           domain.ListResult
-	visible          []domain.Instance
-	loading          bool
-	err              error
-	width            int
-	height           int
-	selected         int
-	wideMode         bool
-	sortKey          instanceSortKey
-	sortDescending   bool
-	status           string
-	view             activeView
-	shellStarting    bool
-	searchActive     bool
-	searchQuery      string
-	tunnelManager    *session.TunnelManager
-	tunnelModal      bool
-	profileModal     bool
-	profileInput     string
-	profileSelected  int
-	regionModal      bool
-	regionInput      string
-	regionSelected   int
-	regionInputDirty bool
-	regionLoading    bool
-	regionLoadError  string
-	detailsFocused   bool
-	tunnelField      int
-	tunnelPreset     int
-	localPort        string
-	remotePort       string
-	tunnelSelected   int
-	quitConfirm      bool
-	helpOpen         bool
+	auth                domain.AuthContext
+	inventory           app.InventoryProvider
+	identity            app.IdentityProvider
+	regionProvider      app.RegionProvider
+	dependencies        health.DependencyStatus
+	appVersion          string
+	factory             providerFactory
+	profileOptions      []string
+	regionOptions       []string
+	regionCache         map[regionCacheKey][]string
+	result              domain.ListResult
+	visible             []domain.Instance
+	loading             bool
+	err                 error
+	width               int
+	height              int
+	selected            int
+	sortKey             instanceSortKey
+	sortDescending      bool
+	status              string
+	view                activeView
+	shellStarting       bool
+	searchActive        bool
+	searchQuery         string
+	tunnelManager       *session.TunnelManager
+	tunnelModal         bool
+	profileModal        bool
+	profileInput        string
+	profileSelected     int
+	regionModal         bool
+	regionInput         string
+	regionSelected      int
+	regionInputDirty    bool
+	regionLoading       bool
+	regionLoadError     string
+	detailsTagsExpanded bool
+	tunnelField         int
+	tunnelPreset        int
+	localPort           string
+	remotePort          string
+	tunnelSelected      int
+	quitConfirm         bool
+	helpOpen            bool
 }
 
 type inventoryLoadedMsg struct {
@@ -254,16 +269,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.requestQuit()
 		case "t":
 			m.view = viewTunnels
+			m.detailsTagsExpanded = false
 			m.status = ""
 		case "h":
 			m.view = viewHealth
+			m.detailsTagsExpanded = false
 			m.status = ""
 		case "esc":
+			if m.view == viewInstanceDetails {
+				m.view = viewInstances
+				m.detailsTagsExpanded = false
+				m.status = ""
+				return m, nil
+			}
 			if m.view == viewTunnels || m.view == viewHealth {
 				m.view = viewInstances
+				m.status = ""
 			}
 		case "r":
-			if m.view == viewTunnels || m.view == viewHealth {
+			if m.view != viewInstances {
 				return m, nil
 			}
 			m.loading = true
@@ -285,23 +309,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			return m.openRegionModal()
 		case "/":
-			if m.view == viewTunnels || m.view == viewHealth {
+			if m.view != viewInstances {
 				return m, nil
 			}
 			m.searchActive = true
 			m.status = ""
-		case "w":
-			if m.view == viewTunnels || m.view == viewHealth {
-				return m, nil
-			}
-			m.wideMode = !m.wideMode
-			if m.isWideTable() {
-				m.status = "wide table enabled"
-			} else if m.wideMode {
-				m.status = "wide table pending wider terminal"
-			} else {
-				m.status = "default table enabled"
-			}
 		case "N":
 			if m.view == viewInstances {
 				m.toggleSort(sortName)
@@ -322,13 +334,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.view == viewInstances {
 				m.toggleSort(sortPrivateIP)
 			}
+		case "A":
+			if m.view == viewInstances {
+				m.toggleSort(sortAge)
+			}
 		case "tab", "d":
-			if m.view == viewInstances && m.isNarrowLayout() {
-				m.detailsFocused = !m.detailsFocused
-				if m.detailsFocused {
-					m.status = "details view"
+			switch m.view {
+			case viewInstances:
+				m.view = viewInstanceDetails
+				m.status = ""
+			case viewInstanceDetails:
+				m.view = viewInstances
+				m.detailsTagsExpanded = false
+				m.status = ""
+			}
+		case "T":
+			if m.view == viewInstanceDetails && m.selectedInstanceHasHiddenTags() {
+				m.detailsTagsExpanded = !m.detailsTagsExpanded
+				if m.detailsTagsExpanded {
+					m.status = "tags expanded"
 				} else {
-					m.status = "instances view"
+					m.status = "tags collapsed"
 				}
 			}
 		case "x":
@@ -344,38 +370,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.tunnelSelected > 0 {
 					m.tunnelSelected--
 				}
-			} else if m.view == viewInstances && m.selected > 0 {
-				m.selected--
+			} else if (m.view == viewInstances || m.view == viewInstanceDetails) && m.selected > 0 {
+				m.selectInstance(m.selected - 1)
 			}
 		case "down", "j":
 			if m.view == viewTunnels {
 				if m.tunnelSelected < len(m.tunnels())-1 {
 					m.tunnelSelected++
 				}
-			} else if m.view == viewInstances && m.selected < len(m.visible)-1 {
-				m.selected++
+			} else if (m.view == viewInstances || m.view == viewInstanceDetails) && m.selected < len(m.visible)-1 {
+				m.selectInstance(m.selected + 1)
 			}
 		case "pgup":
-			if m.view == viewInstances {
-				m.selected = max(0, m.selected-m.instanceTableRowLimit())
+			if m.view == viewInstances || m.view == viewInstanceDetails {
+				m.selectInstance(max(0, m.selected-m.instanceTableRowLimit()))
 			}
 		case "pgdown":
-			if m.view == viewInstances && len(m.visible) > 0 {
-				m.selected = min(len(m.visible)-1, m.selected+m.instanceTableRowLimit())
+			if (m.view == viewInstances || m.view == viewInstanceDetails) && len(m.visible) > 0 {
+				m.selectInstance(min(len(m.visible)-1, m.selected+m.instanceTableRowLimit()))
 			}
 		case "home":
-			if m.view == viewInstances {
-				m.selected = 0
+			if m.view == viewInstances || m.view == viewInstanceDetails {
+				m.selectInstance(0)
 			}
 		case "end":
-			if m.view == viewInstances && len(m.visible) > 0 {
-				m.selected = len(m.visible) - 1
+			if (m.view == viewInstances || m.view == viewInstanceDetails) && len(m.visible) > 0 {
+				m.selectInstance(len(m.visible) - 1)
 			}
 		}
 	case inventoryLoadedMsg:
 		m.loading = false
 		m.err = msg.err
 		if msg.err == nil {
+			m.detailsTagsExpanded = false
 			m.result = msg.result
 			m.applySearch(m.selectedInstanceID())
 		}
@@ -423,6 +450,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.regionProvider = msg.regions
 		m.result = msg.result
 		m.tunnelManager = session.NewTunnelManager(m.auth, nil)
+		m.detailsTagsExpanded = false
+		m.view = viewInstances
 		m.status = fmt.Sprintf("profile switched to %s", m.auth.Profile)
 		m.applySearch("")
 	case regionChangedMsg:
@@ -445,6 +474,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.regionProvider = msg.regions
 		m.result = msg.result
 		m.tunnelManager = session.NewTunnelManager(m.auth, nil)
+		m.detailsTagsExpanded = false
+		m.view = viewInstances
 		m.status = fmt.Sprintf("region switched to %s", m.auth.Region)
 		m.applySearch("")
 	case regionsLoadedMsg:
@@ -491,6 +522,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderError())
 	case len(m.visible) == 0:
 		b.WriteString("No instances found.\n")
+	case m.view == viewInstanceDetails:
+		b.WriteString(panelStyle.Render(m.renderDetails()))
 	default:
 		b.WriteString(m.renderInstances())
 	}
@@ -951,18 +984,7 @@ func (m Model) loadRegionsCmd(key regionCacheKey) tea.Cmd {
 }
 
 func (m Model) renderInstances() string {
-	list := m.renderInstanceTable()
-	details := m.renderDetails()
-	if details == "" {
-		return panelStyle.Render(list)
-	}
-	if m.isNarrowLayout() {
-		if m.detailsFocused {
-			return panelStyle.Render(details)
-		}
-		return panelStyle.Render(list)
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, panelStyle.Render(list), "  ", panelStyle.Render(details))
+	return panelStyle.Render(m.renderInstanceTable())
 }
 
 func (m Model) renderHeader() string {
@@ -977,7 +999,7 @@ func (m Model) renderHeader() string {
 		context = append(context, renderKV("Account", m.result.Account))
 	}
 	if m.result.ARN != "" {
-		context = append(context, renderKV("ARN", trimMiddle(m.result.ARN, 72)))
+		context = append(context, renderKV("Principal", principalLabel(m.result.ARN)))
 	}
 	lines = append(lines, strings.Join(context, "  "))
 
@@ -1024,21 +1046,19 @@ func (m Model) renderInstanceTable() string {
 	if len(m.visible) > 0 {
 		title = fmt.Sprintf("Instances (%d-%d of %d)", start+1, end, len(m.visible))
 	}
+	layout := m.instanceTableLayout()
 	fmt.Fprintf(&b, "%s\n", headerStyle.Render(title))
-	switch {
-	case m.isCompactTable():
-		fmt.Fprintf(&b, "%-2s%-16s  %-19s  %-13s\n", "", "Name", "Instance ID", "SSM")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 54)))
-	case m.isMediumTable():
-		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-13s  %-13s\n", "", "Name", "Instance ID", "State", "SSM")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 71)))
-	case m.isWideTable():
-		fmt.Fprintf(&b, "%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s\n", "", "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "Public IP", "Region")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", wideTableMinWidth)))
+	switch layout.mode {
+	case instanceTableCompact:
+		fmt.Fprintf(&b, "%-2s%-*s  %-19s  %-13s\n", "", layout.nameWidth, "Name", "Instance ID", "SSM")
+	case instanceTableMedium:
+		fmt.Fprintf(&b, "%-2s%-*s  %-19s  %-13s  %-13s\n", "", layout.nameWidth, "Name", "Instance ID", "State", "SSM")
+	case instanceTableFull:
+		fmt.Fprintf(&b, "%-2s%-*s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-15s  %-6s\n", "", layout.nameWidth, "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "Public IP", "AZ", "Age")
 	default:
-		fmt.Fprintf(&b, "%-2s%-22s  %-19s  %-13s  %-13s  %-15s\n", "", "Name", "Instance ID", "State", "SSM", "Private IP")
-		fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", 91)))
+		fmt.Fprintf(&b, "%-2s%-*s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s\n", "", layout.nameWidth, "Name", "Instance ID", "Type", "State", "SSM", "Private IP", "AZ")
 	}
+	fmt.Fprintf(&b, "%s\n", subtleStyle.Render(strings.Repeat("─", layout.rowWidth)))
 	for i := start; i < end; i++ {
 		inst := m.visible[i]
 		cursor := " "
@@ -1092,42 +1112,50 @@ func (m Model) instanceTableRowLimit() int {
 }
 
 func (m Model) renderInstanceRow(cursor string, inst domain.Instance) string {
-	switch {
-	case m.isCompactTable():
-		return fmt.Sprintf("%-2s%-16s  %-19s  %-13s",
+	layout := m.instanceTableLayout()
+	switch layout.mode {
+	case instanceTableCompact:
+		return fmt.Sprintf("%-2s%-*s  %-19s  %-13s",
 			cursor,
-			trim(inst.Name, 16),
+			layout.nameWidth,
+			trim(inst.Name, layout.nameWidth),
 			trim(inst.ID, 19),
 			trim(string(inst.SSMStatus), 13),
 		)
-	case m.isMediumTable():
-		return fmt.Sprintf("%-2s%-18s  %-19s  %-13s  %-13s",
+	case instanceTableMedium:
+		return fmt.Sprintf("%-2s%-*s  %-19s  %-13s  %-13s",
 			cursor,
-			trim(inst.Name, 18),
+			layout.nameWidth,
+			trim(inst.Name, layout.nameWidth),
 			trim(inst.ID, 19),
 			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 		)
-	case m.isWideTable():
-		return fmt.Sprintf("%-2s%-18s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-12s",
+	case instanceTableFull:
+		return fmt.Sprintf("%-2s%-*s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s  %-15s  %-6s",
 			cursor,
-			trim(inst.Name, 18),
+			layout.nameWidth,
+			trim(inst.Name, layout.nameWidth),
 			trim(inst.ID, 19),
 			trim(inst.Type, 10),
 			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 			trim(inst.PrivateIP, 15),
-			trim(inst.PublicIP, 15),
-			trim(inst.Region, 12),
+			trim(emptyText(inst.PublicIP), 15),
+			trim(inst.AZ, 15),
+			trim(ageText(inst.CreatedAt, time.Now()), 6),
 		)
 	default:
-		return fmt.Sprintf("%-2s%-22s  %-19s  %-13s  %-13s  %-15s",
+		return fmt.Sprintf("%-2s%-*s  %-19s  %-10s  %-13s  %-13s  %-15s  %-15s",
 			cursor,
-			trim(inst.Name, 22),
+			layout.nameWidth,
+			trim(inst.Name, layout.nameWidth),
 			trim(inst.ID, 19),
+			trim(inst.Type, 10),
 			trim(inst.State, 13),
 			trim(string(inst.SSMStatus), 13),
 			trim(inst.PrivateIP, 15),
+			trim(inst.AZ, 15),
 		)
 	}
 }
@@ -1139,22 +1167,41 @@ func (m Model) renderDetails() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render("Details"))
+	title := "Details"
+	if len(m.visible) > 0 {
+		title = fmt.Sprintf("Details (%d of %d)", min(m.selected+1, len(m.visible)), len(m.visible))
+	}
+	b.WriteString(headerStyle.Render(title))
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "%s\n", renderKV("Name", emptyText(inst.Name)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Instance ID", inst.ID))
 	fmt.Fprintf(&b, "%s\n", renderKV("Type", emptyText(inst.Type)))
+	fmt.Fprintf(&b, "%s\n", renderKV("AMI ID", emptyText(inst.AMIID)))
 	fmt.Fprintf(&b, "%s\n", renderKV("State", emptyText(inst.State)))
-	fmt.Fprintf(&b, "%s\n", renderKV("Created", timestampText(inst.CreatedAt)))
+	fmt.Fprintf(&b, "%s\n", renderKV("Launch time", timestampText(inst.CreatedAt)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Private IP", emptyText(inst.PrivateIP)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Public IP", emptyText(inst.PublicIP)))
-	fmt.Fprintf(&b, "%s\n", renderKV("Region", emptyText(inst.Region)))
+	fmt.Fprintf(&b, "%s\n", renderKV("AZ", emptyText(inst.AZ)))
 	fmt.Fprintf(&b, "%s\n", renderKV("SSM", styledSSMStatus(inst.SSMStatus)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Agent version", emptyText(inst.Agent.Version)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Agent last ping", lastPingText(inst.Agent.LastPingUnixTime)))
 	fmt.Fprintf(&b, "%s\n", renderKV("Platform", emptyText(inst.Agent.PlatformType)))
 	if inst.SSMStatus != domain.SSMStatusOnline {
 		fmt.Fprintf(&b, "%s\n", renderKV("Action status", fmt.Sprintf("shell/tunnel unavailable while SSM is %s", inst.SSMStatus)))
+	}
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("Security groups"))
+	b.WriteString("\n")
+	if len(inst.SecurityGroups) == 0 {
+		b.WriteString("  -\n")
+	} else {
+		for _, sg := range inst.SecurityGroups {
+			label := emptyText(sg.ID)
+			if sg.Name != "" {
+				label = fmt.Sprintf("%s  %s", sg.ID, sg.Name)
+			}
+			fmt.Fprintf(&b, "  %s\n", label)
+		}
 	}
 	b.WriteString("\n")
 	b.WriteString(headerStyle.Render("Tags"))
@@ -1168,10 +1215,14 @@ func (m Model) renderDetails() string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, key := range keys[:min(len(keys), detailsTagLimit)] {
+	limit := min(len(keys), detailsTagLimit)
+	if m.detailsTagsExpanded {
+		limit = len(keys)
+	}
+	for _, key := range keys[:limit] {
 		fmt.Fprintf(&b, "  %s\n", renderKV(key, inst.Tags[key]))
 	}
-	if hidden := len(keys) - detailsTagLimit; hidden > 0 {
+	if hidden := len(keys) - limit; hidden > 0 {
 		fmt.Fprintf(&b, "  %s\n", subtleStyle.Render(fmt.Sprintf("+ %d more tags", hidden)))
 	}
 	return b.String()
@@ -1233,16 +1284,22 @@ func (m Model) renderHelp() string {
 		renderHelpSection("Instances", [][2]string{
 			{"up/down or k/j", "move selection"},
 			{"/", "search"},
-			{"w", "toggle wide columns"},
-			{"N/I/S/M/P", "sort name/id/state/SSM/private IP"},
+			{"N/I/S/M/P/A", "sort name/id/state/SSM/private IP/age"},
 			{"r", "refresh inventory"},
 			{"Enter", "start shell session"},
 			{"f", "open port forwarding modal"},
-			{"d / Tab", "show details on narrow terminals; press again to return"},
+			{"d / Tab", "show details"},
 			{"t", "show tunnels"},
 			{"h", "show health"},
 			{"p", "choose AWS profile"},
 			{"g", "choose AWS region"},
+		}),
+		renderHelpSection("Details", [][2]string{
+			{"up/down or k/j", "move selection"},
+			{"d / Tab or Esc", "return to table"},
+			{"T", "expand/collapse tags"},
+			{"Enter", "start shell session"},
+			{"f", "open port forwarding modal"},
 		}),
 		renderHelpSection("Search", [][2]string{
 			{"type", "filter visible instances"},
@@ -1424,6 +1481,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applySearch(preferredID string) {
+	oldID := m.selectedInstanceID()
 	if m.searchQuery == "" {
 		m.visible = append([]domain.Instance(nil), m.result.Instances...)
 	} else {
@@ -1440,6 +1498,7 @@ func (m *Model) applySearch(preferredID string) {
 		for i, inst := range m.visible {
 			if inst.ID == preferredID {
 				m.selected = i
+				m.resetExpandedTagsIfSelectionChanged(oldID)
 				return
 			}
 		}
@@ -1447,6 +1506,7 @@ func (m *Model) applySearch(preferredID string) {
 	if len(m.visible) == 0 {
 		m.selected = 0
 	}
+	m.resetExpandedTagsIfSelectionChanged(oldID)
 }
 
 func (m *Model) toggleSort(key instanceSortKey) {
@@ -1466,6 +1526,13 @@ func (m *Model) applySort() {
 		return
 	}
 	sort.SliceStable(m.visible, func(i, j int) bool {
+		if m.sortKey == sortAge {
+			leftUnknown := m.visible[i].CreatedAt == 0
+			rightUnknown := m.visible[j].CreatedAt == 0
+			if leftUnknown != rightUnknown {
+				return !leftUnknown
+			}
+		}
 		cmp := compareInstances(m.visible[i], m.visible[j], m.sortKey)
 		if cmp == 0 {
 			cmp = strings.Compare(m.visible[i].ID, m.visible[j].ID)
@@ -1488,6 +1555,8 @@ func compareInstances(left, right domain.Instance, key instanceSortKey) int {
 		l, r = string(left.SSMStatus), string(right.SSMStatus)
 	case sortPrivateIP:
 		return comparePrivateIP(left.PrivateIP, right.PrivateIP)
+	case sortAge:
+		return compareLaunchTime(left.CreatedAt, right.CreatedAt)
 	default:
 		l, r = left.Name, right.Name
 		if l == "" {
@@ -1498,6 +1567,21 @@ func compareInstances(left, right domain.Instance, key instanceSortKey) int {
 		}
 	}
 	return strings.Compare(strings.ToLower(l), strings.ToLower(r))
+}
+
+func compareLaunchTime(left, right int64) int {
+	switch {
+	case left == right:
+		return 0
+	case left == 0:
+		return 1
+	case right == 0:
+		return -1
+	case left < right:
+		return -1
+	default:
+		return 1
+	}
 }
 
 func comparePrivateIP(left, right string) int {
@@ -1569,6 +1653,23 @@ func (m Model) selectedInstance() (domain.Instance, bool) {
 	return m.visible[m.selected], true
 }
 
+func (m *Model) selectInstance(index int) {
+	oldID := m.selectedInstanceID()
+	m.selected = index
+	m.resetExpandedTagsIfSelectionChanged(oldID)
+}
+
+func (m *Model) resetExpandedTagsIfSelectionChanged(oldID string) {
+	if m.selectedInstanceID() != oldID {
+		m.detailsTagsExpanded = false
+	}
+}
+
+func (m Model) selectedInstanceHasHiddenTags() bool {
+	inst, ok := m.selectedInstance()
+	return ok && len(inst.Tags) > detailsTagLimit
+}
+
 func (m Model) footer() string {
 	if m.helpOpen {
 		return "?/Esc/Enter/q close help"
@@ -1594,21 +1695,66 @@ func (m Model) footer() string {
 	if m.searchActive {
 		return "type filter  Ctrl+U clear  Esc/Enter close"
 	}
-	if m.view == viewInstances && m.isNarrowLayout() {
-		wideHint := "w wide"
-		if m.wideMode {
-			wideHint = "w default"
+	if m.view == viewInstanceDetails {
+		tagHint := ""
+		if m.selectedInstanceHasHiddenTags() {
+			if m.detailsTagsExpanded {
+				tagHint = "  T collapse tags"
+			} else {
+				tagHint = "  T expand tags"
+			}
 		}
-		if m.detailsFocused {
-			return "d/Tab instances  ↑↓/Pg move  " + wideHint + "  Enter shell  f tunnel  q quit"
-		}
-		return "↑↓/Pg move  d/Tab details  / filter  " + wideHint + "  Enter shell  f tunnel  q quit"
+		return "↑↓/Pg move  d/Tab table  Esc table" + tagHint + "  Enter shell  f tunnel  q quit"
 	}
-	return components.Footer(m.wideMode)
+	if m.view == viewInstances {
+		return "↑↓/Pg move  d/Tab details  / filter  Enter shell  f tunnel  q quit"
+	}
+	return components.Footer()
 }
 
-func (m Model) isNarrowLayout() bool {
-	return m.width > 0 && m.width < wideDetailsMinWidth
+func (m Model) instanceTableLayout() instanceTableLayout {
+	contentWidth := m.width - 4
+	if contentWidth <= 0 {
+		contentWidth = 0
+	}
+
+	switch {
+	case m.isCompactTable():
+		nameWidth := adaptiveWidth(contentWidth, 38, 16, 32)
+		return instanceTableLayout{
+			mode:      instanceTableCompact,
+			nameWidth: nameWidth,
+			rowWidth:  nameWidth + 38,
+		}
+	case m.isMediumTable():
+		nameWidth := adaptiveWidth(contentWidth, 53, 18, 48)
+		return instanceTableLayout{
+			mode:      instanceTableMedium,
+			nameWidth: nameWidth,
+			rowWidth:  nameWidth + 53,
+		}
+	case m.isFullTable():
+		nameWidth := adaptiveWidth(contentWidth, 124, 22, 48)
+		return instanceTableLayout{
+			mode:      instanceTableFull,
+			nameWidth: nameWidth,
+			rowWidth:  nameWidth + 124,
+		}
+	default:
+		nameWidth := adaptiveWidth(contentWidth, 99, 22, 60)
+		return instanceTableLayout{
+			mode:      instanceTableDefault,
+			nameWidth: nameWidth,
+			rowWidth:  nameWidth + 99,
+		}
+	}
+}
+
+func adaptiveWidth(available, fixed, minWidth, maxWidth int) int {
+	if available <= 0 {
+		return minWidth
+	}
+	return min(maxWidth, max(minWidth, available-fixed))
 }
 
 func (m Model) isCompactTable() bool {
@@ -1616,11 +1762,11 @@ func (m Model) isCompactTable() bool {
 }
 
 func (m Model) isMediumTable() bool {
-	return m.width > 0 && m.width < mediumTableMinWidth && !m.isCompactTable()
+	return m.width > 0 && m.width < defaultTableMinWidth && !m.isCompactTable()
 }
 
-func (m Model) isWideTable() bool {
-	return m.wideMode && (m.width <= 0 || m.width >= wideTableMinWidth)
+func (m Model) isFullTable() bool {
+	return m.width >= fullTableMinWidth
 }
 
 func (m Model) tunnels() []domain.Tunnel {
@@ -1690,6 +1836,30 @@ func timestampText(unix int64) string {
 		return "-"
 	}
 	return time.Unix(unix, 0).UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+func ageText(unix int64, now time.Time) string {
+	if unix == 0 {
+		return "-"
+	}
+	launchTime := time.Unix(unix, 0)
+	if launchTime.After(now) {
+		return "-"
+	}
+	age := now.Sub(launchTime)
+	switch {
+	case age < time.Minute:
+		return "<1m"
+	case age < time.Hour:
+		return fmt.Sprintf("%dm", int(age/time.Minute))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(age/time.Hour))
+	}
+	days := int(age / (24 * time.Hour))
+	if days < 365 {
+		return fmt.Sprintf("%dd", days)
+	}
+	return fmt.Sprintf("%dy", days/365)
 }
 
 func checkMark(ok bool) string {
@@ -1940,4 +2110,14 @@ func trimMiddle(value string, width int) string {
 	left := (width - 3) / 2
 	right := width - 3 - left
 	return value[:left] + "..." + value[len(value)-right:]
+}
+
+func principalLabel(arn string) string {
+	const maxWidth = 72
+
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || parts[5] == "" {
+		return trimMiddle(arn, maxWidth)
+	}
+	return trimMiddle(parts[5], maxWidth)
 }
